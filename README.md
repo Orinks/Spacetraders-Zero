@@ -1,0 +1,58 @@
+# SpaceTraders Zero
+
+An accessible zero-player game powered by SpaceTraders.io API with WXPython UI.
+
+## Features
+
+- Automated agent activities in SpaceTraders universe
+- Accessible UI with screen reader support
+- Real-time monitoring of agent actions
+- Automated trading and navigation
+
+## Installation
+
+1. Create a virtual environment:
+```bash
+python -m venv venv
+```
+
+2. Activate the virtual environment:
+- Windows: `venv\Scripts\activate`
+- Unix/MacOS: `source venv/bin/activate`
+
+3. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+4. Create a .env file with your SpaceTraders API key:
+```
+SPACETRADERS_TOKEN=your_token_here
+```
+
+5. Run the game:
+```bash
+python src/main.py
+```
+
+## Project Structure
+
+```
+spacetraders-zero/
+├── src/
+│   ├── main.py              # Entry point
+│   ├── api/                 # SpaceTraders API integration
+│   │   ├── client.py        # API client
+│   │   └── models.py        # Data models
+│   ├── agents/              # Agent logic
+│   │   ├── trader.py        # Trading agent
+│   │   └── navigator.py     # Navigation agent
+│   ├── ui/                  # User interface
+│   │   ├── main_window.py   # Main UI window
+│   │   └── panels.py        # UI components
+│   └── utils/               # Utilities
+│       └── config.py        # Configuration
+├── tests/                   # Unit tests
+├── requirements.txt         # Dependencies
+└── README.md               # Documentation
+```

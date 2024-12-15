@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+venv/
+
+# Application state
+agent_state.json
+
+# IDE
+.vscode/
+.idea/
+
+# Misc
+codebuff.txt
