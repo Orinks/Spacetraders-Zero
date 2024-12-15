@@ -25,10 +25,11 @@ python -m venv venv
 pip install -r requirements.txt
 ```
 
-4. Create a .env file with your SpaceTraders API key:
+4. (Optional) Create a .env file with your SpaceTraders API key:
 ```
 SPACETRADERS_TOKEN=your_token_here
 ```
+Note: If you don't have a token yet, you can register a new agent through the UI which will automatically save your token.
 
 5. Run the game:
 ```bash
