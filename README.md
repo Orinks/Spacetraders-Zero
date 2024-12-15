@@ -42,16 +42,11 @@ spacetraders-zero/
 ├── src/
 │   ├── main.py              # Entry point
 │   ├── api/                 # SpaceTraders API integration
-│   │   ├── client.py        # API client
-│   │   └── models.py        # Data models
+│   │   └── client.py        # API client
 │   ├── agents/              # Agent logic
-│   │   ├── trader.py        # Trading agent
-│   │   └── navigator.py     # Navigation agent
-│   ├── ui/                  # User interface
-│   │   ├── main_window.py   # Main UI window
-│   │   └── panels.py        # UI components
-│   └── utils/               # Utilities
-│       └── config.py        # Configuration
+│   │   └── trader.py        # Trading agent
+│   └── ui/                  # User interface
+│       └── main_window.py   # Main UI window
 ├── tests/                   # Unit tests
 ├── requirements.txt         # Dependencies
 └── README.md               # Documentation
