@@ -1,4 +1,5 @@
 import os
+import sys
 import requests
 from typing import Dict, Any
 
@@ -6,13 +7,17 @@ class SpaceTradersClient:
     """Client for interacting with SpaceTraders API"""
     
     def __init__(self):
-        self.base_url = "https://api.spacetraders.io/v2"
+        self.base_url = os.getenv("SPACETRADERS_API_URL", "https://api.spacetraders.io/v2")
         self.token = os.getenv("SPACETRADERS_TOKEN")
             
     def _get_headers(self) -> Dict[str, str]:
         """Get headers for API requests"""
+        if not self.token:
+            raise ValueError("No token available for request. Please register an agent first.")
+        # Ensure token has Bearer prefix
+        auth_token = self.token if self.token.startswith("Bearer ") else f"Bearer {self.token}"
         return {
-            "Authorization": f"Bearer {self.token}",
+            "Authorization": auth_token,
             "Content-Type": "application/json"
         }
         
@@ -24,7 +29,15 @@ class SpaceTradersClient:
         )
         response.raise_for_status()
         result = response.json()
-        self.token = result.get("token")  # Store token for future requests
+        # Extract token from data field and store it
+        self.token = result.get("data", {}).get("token")
+        if not self.token:
+            raise ValueError("No token received in registration response")
+            
+        # Save token to .env file
+        with open('.env', 'w') as f:
+            f.write(f"SPACETRADERS_TOKEN={self.token}\n")
+            
         return result
 
     def get_agent(self) -> Dict[str, Any]:
@@ -38,8 +51,10 @@ class SpaceTradersClient:
         
     def get_contracts(self) -> Dict[str, Any]:
         """Get available contracts"""
+        url = f"{self.base_url}/my/contracts"
+        print(f"\nCalling API: GET {url}", file=sys.stderr)
         response = requests.get(
-            f"{self.base_url}/my/contracts",
+            url,
             headers=self._get_headers()
         )
         response.raise_for_status()
@@ -110,6 +125,15 @@ class SpaceTradersClient:
         response.raise_for_status()
         return response.json()
 
+    def orbit_ship(self, ship_symbol: str) -> Dict[str, Any]:
+        """Move ship into orbit"""
+        response = requests.post(
+            f"{self.base_url}/my/ships/{ship_symbol}/orbit",
+            headers=self._get_headers()
+        )
+        response.raise_for_status()
+        return response.json()
+
     def fulfill_contract(self, contract_id: str, ship_symbol: str, trade_symbol: str, units: int) -> Dict[str, Any]:
         """Fulfill a contract delivery"""
         response = requests.post(
@@ -152,6 +176,24 @@ class SpaceTradersClient:
         )
         response.raise_for_status()
         return response.json()
+        
+    def get_systems(self) -> Dict[str, Any]:
+        """Get list of all systems"""
+        response = requests.get(
+            f"{self.base_url}/systems",
+            headers=self._get_headers()
+        )
+        response.raise_for_status()
+        return response.json()
+        
+    def get_factions(self) -> Dict[str, Any]:
+        """Get list of all factions"""
+        response = requests.get(
+            f"{self.base_url}/factions",
+            headers=self._get_headers()
+        )
+        response.raise_for_status()
+        return response.json()
 
     def navigate_ship(self, ship_symbol: str, waypoint: str) -> Dict[str, Any]:
         """Navigate ship to waypoint"""
@@ -159,6 +201,17 @@ class SpaceTradersClient:
             f"{self.base_url}/my/ships/{ship_symbol}/navigate",
             headers=self._get_headers(),
             json={"waypointSymbol": waypoint}
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def extract_resources(self, ship_symbol: str, survey: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Extract resources from the current location"""
+        json_data = {"survey": survey} if survey else {}
+        response = requests.post(
+            f"{self.base_url}/my/ships/{ship_symbol}/extract",
+            headers=self._get_headers(),
+            json=json_data
         )
         response.raise_for_status()
         return response.json()

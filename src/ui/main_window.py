@@ -241,6 +241,10 @@ class MainWindow(wx.Frame):
         stop_button.Bind(wx.EVT_BUTTON, self.on_stop)
         button_sizer.Add(stop_button, 0, wx.ALL, 5)
         
+        exit_button = wx.Button(panel, label="Exit")
+        exit_button.Bind(wx.EVT_BUTTON, self.on_exit)
+        button_sizer.Add(exit_button, 0, wx.ALL, 5)
+        
         main_sizer.Add(button_sizer, 0, wx.CENTER)
         
         # Set sizer
@@ -259,30 +263,41 @@ class MainWindow(wx.Frame):
         
     def on_agent_update(self, status: Dict[str, Any]):
         """Handle agent status updates"""
-        if status["status"] == "error":
-            self.status_text.AppendText(f"Error: {status['error']}\n")
-            self.tray_icon.SetIcon(wx.Icon(wx.ArtProvider.GetBitmap(wx.ART_ERROR, size=(16, 16))), 
-                                 f"SpaceTraders Zero - Error: {status['error']}")
-        elif status["status"] == "accepted_contract":
-            self.status_text.AppendText(f"Accepted contract: {status['contract']}\n")
-            self.tray_icon.SetIcon(wx.Icon(wx.ArtProvider.GetBitmap(wx.ART_INFORMATION, size=(16, 16))), 
-                                 f"SpaceTraders Zero - Contract accepted: {status['contract']}")
-            self.on_refresh_contracts(None)  # Refresh contracts list
-        elif status["status"] == "bought_goods":
-            self.status_text.AppendText(f"Bought goods: {status['good']}\n")
-            self.tray_icon.SetIcon(wx.Icon(wx.ArtProvider.GetBitmap(wx.ART_INFORMATION, size=(16, 16))), 
-                                 f"SpaceTraders Zero - Bought: {status['good']}")
-            self.on_refresh_market(None)  # Refresh market data
-        elif status["status"] == "sold_goods":
-            self.status_text.AppendText(f"Sold goods: {status['good']}\n")
-            self.tray_icon.SetIcon(wx.Icon(wx.ArtProvider.GetBitmap(wx.ART_INFORMATION, size=(16, 16))), 
-                                 f"SpaceTraders Zero - Sold: {status['good']}")
-            self.on_refresh_market(None)  # Refresh market data
-        elif status["status"] == "navigating":
-            self.status_text.AppendText(f"Navigating to: {status['destination']}\n")
-            self.tray_icon.SetIcon(wx.Icon(wx.ArtProvider.GetBitmap(wx.ART_INFORMATION, size=(16, 16))), 
-                                 f"SpaceTraders Zero - Navigating to: {status['destination']}")
-            self.on_refresh_ships(None)  # Refresh ship status
+        try:
+            if status["status"] == "error":
+                error_msg = status.get('error', 'Unknown error')
+                self.status_text.AppendText(f"Error: {error_msg}\n")
+                self.tray_icon.SetIcon(wx.Icon(wx.ArtProvider.GetBitmap(wx.ART_ERROR, size=(16, 16))), 
+                                     f"SpaceTraders Zero - Error: {status['error']}")
+            elif status["status"] == "accepted_contract":
+                self.status_text.AppendText(f"Accepted contract: {status['contract']}\n")
+                self.tray_icon.SetIcon(wx.Icon(wx.ArtProvider.GetBitmap(wx.ART_INFORMATION, size=(16, 16))), 
+                                     f"SpaceTraders Zero - Contract accepted: {status['contract']}")
+                self.on_refresh_contracts(None)  # Refresh contracts list
+                self.on_refresh_contracts(None)  # Refresh contracts list
+            elif status["status"] == "bought_goods":
+                self.status_text.AppendText(f"Bought goods: {status['good']}\n")
+                self.tray_icon.SetIcon(wx.Icon(wx.ArtProvider.GetBitmap(wx.ART_INFORMATION, size=(16, 16))), 
+                                     f"SpaceTraders Zero - Bought: {status['good']}")
+                self.on_refresh_market(None)  # Refresh market data
+            elif status["status"] == "sold_goods":
+                self.status_text.AppendText(f"Sold goods: {status['good']}\n")
+                self.tray_icon.SetIcon(wx.Icon(wx.ArtProvider.GetBitmap(wx.ART_INFORMATION, size=(16, 16))), 
+                                     f"SpaceTraders Zero - Sold: {status['good']}")
+                self.on_refresh_market(None)  # Refresh market data
+            elif status["status"] == "navigating":
+                self.status_text.AppendText(f"Navigating to: {status['destination']}\n")
+                self.tray_icon.SetIcon(wx.Icon(wx.ArtProvider.GetBitmap(wx.ART_INFORMATION, size=(16, 16))), 
+                                     f"SpaceTraders Zero - Navigating to: {status['destination']}")
+                self.on_refresh_ships(None)  # Refresh ship status
+            elif status["status"] == "starting":
+                self.status_text.AppendText(f"{status['message']}\n")
+            elif status["status"] == "info":
+                self.status_text.AppendText(f"Info: {status['message']}\n")
+        except RuntimeError:
+            # UI has been destroyed, stop the agent
+            if hasattr(self, 'agent'):
+                self.agent.stop()
             
     def on_start(self, event):
         """Handle start button click"""
@@ -326,8 +341,11 @@ class MainWindow(wx.Frame):
             dialog = wx.TextEntryDialog(self, "Enter quantity to buy:", "Buy Goods")
             if dialog.ShowModal() == wx.ID_OK:
                 units = int(dialog.GetValue())
-                # TODO: Get ship symbol from ship status
-                ship_symbol = "MY-SHIP-1"  # Placeholder
+                ships = self.client.get_my_ships()
+                if not ships.get("data"):
+                    self.status_text.AppendText("No ships available\n")
+                    return
+                ship_symbol = ships["data"][0]["symbol"]  # Use first ship
                 result = self.client.buy_goods(ship_symbol, symbol, units)
                 self.status_text.AppendText(f"Purchased {units} units of {symbol}\n")
                 self.on_refresh_market(None)  # Refresh market data
@@ -352,8 +370,17 @@ class MainWindow(wx.Frame):
     def on_refresh_waypoints(self, event):
         """Refresh the waypoints list"""
         try:
-            # TODO: Get current system from ship data
-            system = "X1-TEST"  # Placeholder
+            # Get current system from ship data
+            ships = self.client.get_my_ships()
+            if not ships.get("data"):
+                self.status_text.AppendText("No ships available to check waypoints\n")
+                return
+            ship = ships["data"][0]  # Use first ship's location
+            nav = ship.get("nav", {})
+            current_waypoint = nav.get("waypointSymbol")
+            if not current_waypoint:
+                return
+            system = '-'.join(current_waypoint.split('-')[:2])  # Extract system from waypoint
             waypoints = self.client.get_waypoints(system)
             self.waypoint_list.DeleteAllItems()
             for waypoint in waypoints.get("data", []):
@@ -423,8 +450,11 @@ class MainWindow(wx.Frame):
             dialog = wx.TextEntryDialog(self, "Enter quantity to sell:", "Sell Goods")
             if dialog.ShowModal() == wx.ID_OK:
                 units = int(dialog.GetValue())
-                # TODO: Get ship symbol from ship status
-                ship_symbol = "MY-SHIP-1"  # Placeholder
+                ships = self.client.get_my_ships()
+                if not ships.get("data"):
+                    self.status_text.AppendText("No ships available\n")
+                    return
+                ship_symbol = ships["data"][0]["symbol"]  # Use first ship
                 result = self.client.sell_goods(ship_symbol, symbol, units)
                 self.status_text.AppendText(f"Sold {units} units of {symbol}\n")
                 self.on_refresh_market(None)  # Refresh market data
@@ -435,10 +465,18 @@ class MainWindow(wx.Frame):
     def on_refresh_market(self, event):
         """Refresh the market data"""
         try:
-            # TODO: Get current system/waypoint from ship data
-            system = "X1-TEST"  # Placeholder
-            waypoint = "X1-TEST-MARKET"  # Placeholder
-            market_data = self.client.get_market(system, waypoint)
+            # Get current system/waypoint from ship data
+            ships = self.client.get_my_ships()
+            if not ships.get("data"):
+                self.status_text.AppendText("No ships available to check market\n")
+                return
+            ship = ships["data"][0]  # Use first ship's location
+            nav = ship.get("nav", {})
+            current_waypoint = nav.get("waypointSymbol")
+            if not current_waypoint:
+                return
+            system = '-'.join(current_waypoint.split('-')[:2])  # Extract system from waypoint
+            market_data = self.client.get_market(system, current_waypoint)
             
             self.market_list.DeleteAllItems()
             for item in market_data.get("data", {}).get("tradeGoods", []):
@@ -470,10 +508,19 @@ class MainWindow(wx.Frame):
         if dialog.ShowModal() == wx.ID_OK:
             try:
                 agent_name = dialog.GetValue()
+                # Get factions from API
+                factions = ["COSMIC"]  # Default to COSMIC if can't get factions
+                try:
+                    faction_response = self.client.get_factions()
+                    if faction_response.get("data"):
+                        factions = [f["symbol"] for f in faction_response["data"]]
+                except Exception as e:
+                    self.status_text.AppendText(f"Failed to get factions: {str(e)}\n")
+                
                 faction_dialog = wx.SingleChoiceDialog(self, 
                     "Choose your faction:", 
                     "Select Faction",
-                    choices=["COSMIC", "VOID", "GALACTIC", "QUANTUM", "DOMINION"])
+                    choices=factions)
                 
                 if faction_dialog.ShowModal() == wx.ID_OK:
                     faction = faction_dialog.GetStringSelection()

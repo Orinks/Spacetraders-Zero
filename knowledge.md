@@ -13,6 +13,8 @@ Zero-player game automating SpaceTraders.io API interactions. Focus on accessibi
 - Python with wxPython UI
 - Environment variables for configuration
 - SpaceTraders API v2 integration
+  - API tokens must include "Bearer " prefix
+  - Tokens stored in .env file
 - Windows-based development environment
   - Use Windows commands (e.g. `venv\Scripts\activate`)
   - Use backslashes for paths
