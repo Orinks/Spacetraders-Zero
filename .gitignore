@@ -15,3 +15,6 @@ agent_state.json
 
 # Misc
 codebuff.txt
+
+# Environment variables
+.env
