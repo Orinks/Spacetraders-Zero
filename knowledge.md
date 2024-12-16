@@ -26,5 +26,22 @@ Zero-player game automating SpaceTraders.io API interactions. Focus on accessibi
 - Log important state changes
 
 ## Useful Links
-- SpaceTraders API Docs: https://spacetraders.io/docs/guide
+- SpaceTraders API Docs:
+-
+https://docs.spacetraders.io/game-concepts/agents-and-factions
+- https://docs.spacetraders.io/game-concepts/systems-waypoints
+- https://docs.spacetraders.io/game-concepts/ship-navigation
+- https://docs.spacetraders.io/game-concepts/extracting-resources
+- https://docs.spacetraders.io/game-concepts/outfitting
+- https://docs.spacetraders.io/game-concepts/maintenance
+- https://docs.spacetraders.io/game-concepts/crew-morale
+- https://docs.spacetraders.io/game-concepts/exploration
+- https://docs.spacetraders.io/game-concepts/markets
+- API guide docs:
+- https://docs.spacetraders.io/api-guide/open-api-spec
+- https://docs.spacetraders.io/api-guide/authorization
+- https://docs.spacetraders.io/api-guide/response-errors
+- https://docs.spacetraders.io/api-guide/rate-limits
+
+
 - WxPython Docs: https://docs.wxpython.org/

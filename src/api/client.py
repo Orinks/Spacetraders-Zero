@@ -1,5 +1,7 @@
 import os
 import sys
+import time
+import logging
 import requests
 from typing import Dict, Any
 
@@ -7,15 +9,22 @@ class SpaceTradersClient:
     """Client for interacting with SpaceTraders API"""
     
     def __init__(self):
+        logging.basicConfig(level=logging.INFO)
         self.base_url = os.getenv("SPACETRADERS_API_URL", "https://api.spacetraders.io/v2")
         self.token = os.getenv("SPACETRADERS_TOKEN")
+        self.error_count = 0
+        self.request_count = 0
+        self.last_error_time = None
+        self.error_history = []  # List of (timestamp, endpoint) tuples
             
     def _get_headers(self) -> Dict[str, str]:
         """Get headers for API requests"""
         if not self.token:
+            logging.warning("No token available for request. Please register an agent first.")
             raise ValueError("No token available for request. Please register an agent first.")
         # Ensure token has Bearer prefix
         auth_token = self.token if self.token.startswith("Bearer ") else f"Bearer {self.token}"
+        logging.debug(f"Using auth token: {auth_token[:8]}...")
         return {
             "Authorization": auth_token,
             "Content-Type": "application/json"
@@ -23,10 +32,12 @@ class SpaceTradersClient:
         
     def register_new_agent(self, symbol: str, faction: str = "COSMIC") -> Dict[str, Any]:
         """Register a new agent and get access token"""
+        logging.info(f"Registering new agent {symbol} with faction {faction}")
         response = requests.post(
             f"{self.base_url}/register",
             json={"symbol": symbol, "faction": faction}
         )
+        logging.debug(f"Registration response: {response.status_code}")
         response.raise_for_status()
         result = response.json()
         # Extract token from data field and store it
@@ -147,6 +158,42 @@ class SpaceTradersClient:
         )
         response.raise_for_status()
         return response.json()
+
+    def _retry_api_call(self, func, *args, max_attempts=3):
+        """Retry an API call with exponential backoff"""
+        last_error = None
+        self.request_count += 1
+        endpoint = func.__name__ if hasattr(func, '__name__') else 'unknown'
+        
+        # Check recent error rate for this endpoint
+        endpoint_errors = len([t for t, e in self.error_history if e == endpoint and t > time.time() - 300])
+        if endpoint_errors > 5:  # If more than 5 errors in last 5 minutes for this endpoint
+            logging.warning(f"High error rate for endpoint {endpoint}, increasing backoff")
+            time.sleep(10)  # Additional backoff for problematic endpoints
+        for attempt in range(max_attempts):
+            try:
+                logging.debug(f"API call attempt {attempt + 1}/{max_attempts}")
+                result = func(*args)
+                logging.debug("API call successful")
+                return result
+            except requests.exceptions.RequestException as e:
+                last_error = e
+                self.error_count += 1
+                self.last_error_time = time.time()
+                self.error_history.append((time.time(), endpoint))
+                # Keep only last hour of errors
+                cutoff = time.time() - 3600
+                self.error_history = [(t, e) for t, e in self.error_history if t > cutoff]
+                if attempt < max_attempts - 1:
+                    # Base exponential backoff modified by error rate
+                    base_wait = 2 ** attempt
+                    error_rate = (self.error_count / self.request_count * 100) if self.request_count > 0 else 0
+                    wait_time = base_wait * (1 + (error_rate / 100))  # Increase wait time as error rate increases
+                    logging.warning(f"API call failed, retrying in {wait_time:.1f}s: {str(e)}")
+                    time.sleep(wait_time)
+                else:
+                    logging.error(f"API call failed after {max_attempts} attempts: {str(e)}")
+                    raise last_error
 
     def extract_resources(self, ship_symbol: str, survey: Dict[str, Any] = None) -> Dict[str, Any]:
         """Extract resources from the current location"""

@@ -1,19 +1,35 @@
 import wx
 import wx.adv
 import requests
+import logging
 from typing import Dict, Any
 from api.client import SpaceTradersClient
 from agents.trader import AutomatedTrader
 
 class MainWindow(wx.Frame):
     def __init__(self, parent, title):
-        super().__init__(parent, title=title, size=(800, 600))
-        self.client = SpaceTradersClient()
-        self.agent = AutomatedTrader(self.client, self.on_agent_update)
-        self.refresh_timer = wx.Timer(self)
-        self.Bind(wx.EVT_TIMER, self.on_refresh_timer, self.refresh_timer)
-        self.init_ui()
-        self.init_tray()
+        try:
+            super().__init__(parent, title=title, size=(800, 600))
+            logging.info("MainWindow: Base window initialized")
+            
+            self.client = SpaceTradersClient()
+            logging.info("MainWindow: API client created")
+            
+            self.agent = AutomatedTrader(self.client, self.on_agent_update)
+            logging.info("MainWindow: Trader agent initialized")
+            
+            self.refresh_timer = wx.Timer(self)
+            self.Bind(wx.EVT_TIMER, self.on_refresh_timer, self.refresh_timer)
+            logging.info("MainWindow: Timer initialized")
+            
+            self.init_ui()
+            logging.info("MainWindow: UI initialized")
+            
+            self.init_tray()
+            logging.info("MainWindow: Tray initialized")
+        except Exception as e:
+            logging.error(f"MainWindow initialization failed: {str(e)}", exc_info=True)
+            raise
         
     def init_tray(self):
         """Initialize system tray icon and menu"""
@@ -218,10 +234,18 @@ class MainWindow(wx.Frame):
         self.agent_name = wx.StaticText(info_panel, label="Agent: Not registered")
         self.credits = wx.StaticText(info_panel, label="Credits: 0")
         self.location = wx.StaticText(info_panel, label="Location: Unknown")
+        self.profit_info = wx.StaticText(info_panel, label="Total Profit: 0")
+        self.trades_info = wx.StaticText(info_panel, label="Trades: 0 completed, 0 failed")
+        self.api_health = wx.StaticText(info_panel, label="API Health: No errors")
+        self.mining_info = wx.StaticText(info_panel, label="Mining: 0/0 successful")
         
         info_sizer.Add(self.agent_name, pos=(0, 0), flag=wx.ALL, border=5)
         info_sizer.Add(self.credits, pos=(1, 0), flag=wx.ALL, border=5)
         info_sizer.Add(self.location, pos=(2, 0), flag=wx.ALL, border=5)
+        info_sizer.Add(self.profit_info, pos=(3, 0), flag=wx.ALL, border=5)
+        info_sizer.Add(self.trades_info, pos=(4, 0), flag=wx.ALL, border=5)
+        info_sizer.Add(self.api_health, pos=(5, 0), flag=wx.ALL, border=5)
+        info_sizer.Add(self.mining_info, pos=(6, 0), flag=wx.ALL, border=5)
         
         info_panel.SetSizer(info_sizer)
         status_sizer.Add(info_panel, 0, wx.EXPAND | wx.ALL, 5)
@@ -316,6 +340,33 @@ class MainWindow(wx.Frame):
         self.on_refresh_ships(None)
         self.on_refresh_contracts(None)
         self.on_refresh_market(None)
+        
+        # Update performance metrics
+        if hasattr(self, 'agent'):
+            self.profit_info.SetLabel(f"Total Profit: {self.agent.total_profits}")
+            self.trades_info.SetLabel(f"Trades: {self.agent.trades_completed} completed, {self.agent.failed_trades} failed")
+            
+            # Update API health info
+            error_rate = (self.client.error_count / self.client.request_count * 100) if self.client.request_count > 0 else 0
+            status = "PAUSED" if error_rate > 20 else "OK"
+            
+            # Calculate recent error rate from history
+            recent_errors = len([t for t, _ in self.client.error_history if t > time.time() - 300])  # Last 5 minutes
+            recent_rate = f"Recent: {recent_errors} in 5m"
+            
+            self.api_health.SetLabel(f"API Health: {error_rate:.1f}% errors ({self.client.error_count}/{self.client.request_count}) - {status} - {recent_rate}")
+            
+            # Update color based on status
+            if error_rate > 20:
+                self.api_health.SetForegroundColour(wx.RED)
+            elif error_rate > 10:
+                self.api_health.SetForegroundColour(wx.Colour(255, 140, 0))  # Orange
+            else:
+                self.api_health.SetForegroundColour(wx.Colour(0, 128, 0))  # Dark Green
+            
+            # Update mining metrics
+            mining_success_rate = (self.agent.mining_successes / self.agent.mining_attempts * 100) if self.agent.mining_attempts > 0 else 0
+            self.mining_info.SetLabel(f"Mining: {self.agent.mining_successes}/{self.agent.mining_attempts} successful ({mining_success_rate:.1f}%)")
         
     def on_refresh_contracts(self, event):
         """Refresh the contracts list"""

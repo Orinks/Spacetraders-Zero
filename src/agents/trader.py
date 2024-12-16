@@ -14,11 +14,24 @@ class AutomatedTrader:
         self.status_callback = status_callback
         self.trade_history = []  # Track successful trades
         self.known_markets = {}  # Cache market data
+        self.market_trends = {}  # Track price history per good
         self.ship_cargo = {}  # Track cargo per ship
         self.ship_states = {}  # Track ship states
         self.visited_waypoints = set()  # Track explored locations
         self.cycle_count = 0  # Track number of cycles
+        
+        # Mining metrics
+        self.mining_attempts = 0
+        self.mining_successes = 0
+        
+        # Performance metrics
+        self.total_profits = 0
+        self.trades_completed = 0
+        self.failed_trades = 0
+        self.start_time = None
+        
         self.load_state()
+        logging.info("Automated trader initialized")
         
     def save_state(self):
         """Save agent state to disk"""
@@ -69,6 +82,9 @@ class AutomatedTrader:
                 return func(*args)
             except Exception as e:
                 if attempt == max_attempts - 1:
+                    # If we've hit max retries, back off for longer
+                    if self.client.error_count > 10:  # High error rate
+                        time.sleep(30)  # Longer backoff when errors are high
                     raise
                 time.sleep(2 ** attempt)  # Exponential backoff
                 
@@ -98,12 +114,27 @@ class AutomatedTrader:
                     self.status_callback({"status": "error", "error": str(e)})
                 time.sleep(30)  # Back off on error
                 
+    def _update_market_trends(self, market_symbol: str, good_symbol: str, price: int):
+        """Track price history for market analysis"""
+        if market_symbol not in self.market_trends:
+            self.market_trends[market_symbol] = {}
+        if good_symbol not in self.market_trends[market_symbol]:
+            self.market_trends[market_symbol][good_symbol] = []
+        self.market_trends[market_symbol][good_symbol].append((time.time(), price))
+        # Keep only last 24 hours of data
+        cutoff = time.time() - (24 * 60 * 60)
+        self.market_trends[market_symbol][good_symbol] = [
+            (t, p) for t, p in self.market_trends[market_symbol][good_symbol] 
+            if t > cutoff
+        ]
+
     def find_best_trade_route(self, ship_data: Dict[str, Any]) -> Dict[str, Any]:
         """Find most profitable trade route from current location"""
         try:
             nav = ship_data.get("nav", {})
             current_waypoint = nav.get("waypointSymbol")
             if not current_waypoint:
+                logging.debug("No current waypoint found for ship")
                 return None
             system = nav.get("systemSymbol")  # Use system from nav data
             if not system:
@@ -125,10 +156,12 @@ class AutomatedTrader:
             for market1 in markets:
                 # Get market data for all markets
                 market1_data = self._retry_api_call(self.client.get_market, system, market1["symbol"])
+                logging.debug(f"Analyzing market at {market1['symbol']}")
                 for good in market1_data.get("data", {}).get("tradeGoods", []):
                     # Check supply levels for potential profit
                     supply_level = good.get("supply")
                     buy_price = good.get("purchasePrice", 0)
+                    self._update_market_trends(market1["symbol"], good["symbol"], buy_price)
                     # Look for best sell price at other markets
                     for market2 in markets:
                         if market2["symbol"] != market1["symbol"]:
@@ -136,14 +169,25 @@ class AutomatedTrader:
                             for sell_good in market2_data.get("data", {}).get("tradeGoods", []):
                                 if sell_good["symbol"] == good["symbol"]:
                                         profit = sell_good.get("sellPrice", 0) - buy_price
-                                        if profit > best_profit:
-                                            best_profit = profit
-                                            best_route = {
-                                                "buy_market": market1["symbol"],
-                                                "sell_market": market2["symbol"],
-                                                "good": good["symbol"],
-                                                "profit_per_unit": profit
-                                            }
+                                        
+                                        # Check price trends for stability
+                                        trend_data = self.market_trends.get(market2["symbol"], {}).get(good["symbol"], [])
+                                        if trend_data:
+                                            # Only consider trades where sell price has been stable or increasing
+                                            recent_prices = [p for t, p in trend_data[-5:]]  # Last 5 price points
+                                            if len(recent_prices) >= 2:
+                                                price_stable = all(p2 >= p1 for p1, p2 in zip(recent_prices, recent_prices[1:]))
+                                                if price_stable and profit > best_profit:
+                                                    best_profit = profit
+                                                    best_route = {
+                                                        "buy_market": market1["symbol"],
+                                                        "sell_market": market2["symbol"],
+                                                        "good": good["symbol"],
+                                                        "profit_per_unit": profit,
+                                                        "supply_level": supply_level,
+                                                        "total_potential_profit": profit * min(space_available, 10)
+                                                    }
+                                            logging.info(f"Found better trade route: {best_route}")
             return best_route
         except Exception as e:
             if self.status_callback:
@@ -182,7 +226,16 @@ class AutomatedTrader:
     def run_cycle(self) -> Dict[str, Any]:
         """Run one cycle of automated trading"""
         if not self.running:
+            logging.debug("Agent cycle skipped - agent not running")
             return {"status": "stopped"}
+        
+        # Check error rate before proceeding
+        error_rate = (self.client.error_count / self.client.request_count * 100) if self.client.request_count > 0 else 0
+        if error_rate > 20:  # Pause if error rate exceeds 20%
+            logging.warning(f"Pausing agent due to high error rate: {error_rate:.1f}%")
+            return {"status": "paused_high_errors"}
+            
+        logging.debug("Starting agent cycle")
             
         try:
             # Get current status once at start of cycle
@@ -204,8 +257,10 @@ class AutomatedTrader:
                                                   and w.get("type") == "ASTEROID"), None)
                             if current_wp_data:
                                 try:
+                                    self.mining_attempts += 1
                                     result = self._retry_api_call(self.client.extract_resources, ship["symbol"])
                                     if result:
+                                        self.mining_successes += 1
                                         return {"status": "mining", "ship": ship["symbol"], "result": result}
                                 except Exception as e:
                                     if "cooldown" not in str(e).lower():  # Ignore cooldown errors
@@ -245,25 +300,29 @@ class AutomatedTrader:
             # For each ship, try to find mining or trading opportunities 
             for ship in ships.get("data", []):
                 try:
-                    # First check for asteroids to mine
-                    nav = ship.get("nav", {})
-                    nav_status = nav.get("status")
-                    system = nav.get("systemSymbol")
-                    if system and nav_status not in ("IN_TRANSIT", "IN_ORBIT"):
-                        waypoints = self._retry_api_call(self.client.get_waypoints, system)
-                        asteroids = [w for w in waypoints.get("data", []) 
-                                   if w.get("type") == "ASTEROID"]
-                        if asteroids:
-                            # Navigate to first asteroid found
-                            result = self._retry_api_call(
-                                self.client.navigate_ship,
-                                ship["symbol"],
-                                asteroids[0]["symbol"]
-                            )
-                            if result:
-                                return {"status": "navigating", "destination": asteroids[0]["symbol"]}
+                    # Check mining success rate to decide strategy
+                    mining_success_rate = (self.mining_successes / self.mining_attempts * 100) if self.mining_attempts > 0 else 0
                     
-                    # If no asteroids, try trading
+                    # Prioritize mining if success rate is good (>50%)
+                    if mining_success_rate > 50:
+                        nav = ship.get("nav", {})
+                        nav_status = nav.get("status")
+                        system = nav.get("systemSymbol")
+                        if system and nav_status not in ("IN_TRANSIT", "IN_ORBIT"):
+                            waypoints = self._retry_api_call(self.client.get_waypoints, system)
+                            asteroids = [w for w in waypoints.get("data", []) 
+                                       if w.get("type") == "ASTEROID"]
+                            if asteroids:
+                                # Navigate to first asteroid found
+                                result = self._retry_api_call(
+                                    self.client.navigate_ship,
+                                    ship["symbol"],
+                                    asteroids[0]["symbol"]
+                                )
+                                if result:
+                                    return {"status": "navigating", "destination": asteroids[0]["symbol"]}
+                    
+                    # Try trading if mining not viable or no asteroids found
                     route = self.find_best_trade_route(ship)
                     if route:
                         nav = ship.get("nav", {})
@@ -281,7 +340,10 @@ class AutomatedTrader:
                                     10
                                 )
                                 if result:
+                                    self.trades_completed += 1
                                     continue  # Move to next ship
+                                else:
+                                    self.failed_trades += 1
                         elif current_waypoint == route["sell_market"]:
                             # Sell goods if we have them
                             cargo = ship.get("cargo", {})
@@ -293,7 +355,12 @@ class AutomatedTrader:
                                     cargo.get("units", 0)
                                 )
                                 if result:
+                                    profit = result.get("data", {}).get("transaction", {}).get("totalPrice", 0)
+                                    self.total_profits += profit
+                                    self.trades_completed += 1
                                     continue  # Move to next ship
+                                else:
+                                    self.failed_trades += 1
                         else:
                             # Navigate to buy location if not already there
                             result = self._retry_api_call(
