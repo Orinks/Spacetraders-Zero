@@ -2,6 +2,7 @@ import time
 import threading
 import json
 import sys
+import logging
 from typing import Dict, Any, List, Optional
 from api.client import SpaceTradersClient
 class AutomatedTrader:
@@ -97,7 +98,7 @@ class AutomatedTrader:
                 print(f"\nAgent cycle starting...", file=sys.stderr)
                 result = self.run_cycle()
                 print(f"Cycle result: {result}", file=sys.stderr)
-                if result and self.status_callback:  # Only callback if we have a result
+                if result and self.status_callback and result["status"] != "idle":  # Only show meaningful status updates
                     self.status_callback(result)
                 time.sleep(5)  # Don't overwhelm the API
             except requests.exceptions.HTTPError as e:
@@ -142,12 +143,10 @@ class AutomatedTrader:
             
             # Get all waypoints in system
             waypoints = self._retry_api_call(self.client.get_waypoints, system)
-            print(f"Available waypoints: {waypoints}", file=sys.stderr)
             markets = [w for w in waypoints.get("data", []) if w.get("type") == "MARKETPLACE"]
             asteroids = [w for w in waypoints.get("data", []) 
                         if w.get("type") == "ASTEROID" and 
                         any(t.get("symbol") == "COMMON_METAL_DEPOSITS" for t in w.get("traits", []))]
-            print(f"Found {len(asteroids)} asteroid fields with metal deposits", file=sys.stderr)
             
             best_profit = 0
             best_route = None
@@ -218,7 +217,9 @@ class AutomatedTrader:
             
             # Get all waypoints in system
             waypoints = self._retry_api_call(self.client.get_waypoints, system)
-            return next((w for w in waypoints.get("data", []) if w.get("type") == "MARKETPLACE"), None)
+            markets = [w for w in waypoints.get("data", []) 
+                      if any(t.get("symbol") == "MARKETPLACE" for t in w.get("traits", []))]
+            return markets[0] if markets else None
         except Exception as e:
             print(f"Error finding nearest market: {e}")
             return None
@@ -242,35 +243,50 @@ class AutomatedTrader:
             if self.status_callback:
                 self.status_callback({"status": "info", "message": "Checking status..."})
 
-            # Check for mining opportunities
+            # Check current ship status first
             ships = self._retry_api_call(self.client.get_my_ships)
             if ships.get("data"):
                 for ship in ships["data"]:
                     nav = ship.get("nav", {})
-                    if nav.get("status") == "IN_ORBIT":
-                        # Check if we're at an asteroid
+                    current_status = nav.get("status")
+                    
+                    # If already mining, skip other API calls
+                    if current_status == "IN_ORBIT":
                         current_waypoint = nav.get("waypointSymbol")
                         if current_waypoint:
+                            # Only fetch waypoints if we need to check for asteroids
                             waypoints = self._retry_api_call(self.client.get_waypoints, nav.get("systemSymbol"))
                             current_wp_data = next((w for w in waypoints.get("data", []) 
                                                   if w.get("symbol") == current_waypoint 
                                                   and w.get("type") == "ASTEROID"), None)
                             if current_wp_data:
+                                nav_status = nav.get("status", "UNKNOWN")
                                 try:
+                                    logging.info(f"Attempting to mine at waypoint {current_waypoint}")
+                                    if nav_status != "IN_ORBIT":
+                                        logging.warning(f"Ship must be in orbit to mine. Current status: {nav_status}")
+                                        # Try to orbit if docked
+                                        if nav_status == "DOCKED":
+                                            self._retry_api_call(self.client.orbit_ship, ship["symbol"])
+                                        continue
+                                    
                                     self.mining_attempts += 1
                                     result = self._retry_api_call(self.client.extract_resources, ship["symbol"])
                                     if result:
                                         self.mining_successes += 1
                                         return {"status": "mining", "ship": ship["symbol"], "result": result}
                                 except Exception as e:
-                                    if "cooldown" not in str(e).lower():  # Ignore cooldown errors
-                                        print(f"Mining error: {e}", file=sys.stderr)
+                                    error_msg = str(e).lower()
+                                    if "cooldown" in error_msg:
+                                        logging.debug(f"Mining cooldown at {current_waypoint}")
+                                    elif "cargo" in error_msg:
+                                        logging.warning(f"Cargo full at {current_waypoint}")
+                                    else:
+                                        logging.error(f"Mining error at {current_waypoint}: {e}")
                 
-            # Only check contracts if we have cargo to potentially fulfill them
-            if any(self.ship_cargo.values()):
+            # Only check contracts if we have cargo and aren't currently mining
+            if any(self.ship_cargo.values()) and not any(ship.get("nav", {}).get("status") == "IN_ORBIT" for ship in ships.get("data", [])):
                 contracts = self._retry_api_call(self.client.get_contracts)
-                print(f"Contracts response: {contracts}", file=sys.stderr)
-                
                 if contracts.get("data"):
                     for contract in contracts["data"]:
                         # Accept open contracts
@@ -377,9 +393,7 @@ class AutomatedTrader:
             # Get ship status
             if self.status_callback:
                 self.status_callback({"status": "info", "message": "Checking ship status..."})
-            print(f"Checking ships...", file=sys.stderr)
             ships = self._retry_api_call(self.client.get_my_ships)
-            print(f"Ships response: {ships}", file=sys.stderr)
             if not ships.get("data"):
                 return {"status": "no_ships"}
                 
@@ -426,7 +440,6 @@ class AutomatedTrader:
                 elif nav_status == "IN_ORBIT":
                     try:
                         route = self.find_best_trade_route(ship)
-                        print(f"Found route: {route}", file=sys.stderr)  # Debug print
                         if route:
                             nav = ship.get("nav", {})
                             current_waypoint = nav.get("waypointSymbol")

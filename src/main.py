@@ -9,7 +9,10 @@ def main():
     # Configure logging
     logging.basicConfig(
         level=logging.DEBUG,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler('logs/spacetraders.log')
+        ]
     )
     logger = logging.getLogger(__name__)
     

@@ -22,9 +22,11 @@ class SpaceTradersClient:
         if not self.token:
             logging.warning("No token available for request. Please register an agent first.")
             raise ValueError("No token available for request. Please register an agent first.")
-        # Ensure token has Bearer prefix
-        auth_token = self.token if self.token.startswith("Bearer ") else f"Bearer {self.token}"
-        logging.debug(f"Using auth token: {auth_token[:8]}...")
+        # Ensure token has Bearer prefix and strip any whitespace
+        auth_token = self.token.strip()
+        if not auth_token.startswith("Bearer "):
+            auth_token = f"Bearer {auth_token}"
+        logging.debug(f"Using auth token: {auth_token[:15]}...")
         return {
             "Authorization": auth_token,
             "Content-Type": "application/json"

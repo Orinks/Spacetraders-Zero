@@ -316,8 +316,10 @@ class MainWindow(wx.Frame):
                 self.on_refresh_ships(None)  # Refresh ship status
             elif status["status"] == "starting":
                 self.status_text.AppendText(f"{status['message']}\n")
-            elif status["status"] == "info":
-                self.status_text.AppendText(f"Info: {status['message']}\n")
+            elif status["status"] == "mining":
+                self.status_text.AppendText(f"Mining resources at {status.get('result', {}).get('extraction', {}).get('shipSymbol', 'unknown location')}\n")
+            elif status["status"] == "navigating":
+                self.status_text.AppendText(f"Navigating to: {status['destination']}\n")
         except RuntimeError:
             # UI has been destroyed, stop the agent
             if hasattr(self, 'agent'):
