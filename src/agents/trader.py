@@ -3,8 +3,10 @@ import threading
 import json
 import sys
 import logging
-from typing import Dict, Any, List, Optional
+import requests
+from typing import Dict, Any, List, Optional, Tuple
 from api.client import SpaceTradersClient
+
 class AutomatedTrader:
     """Basic automated trading agent"""
     
@@ -62,20 +64,40 @@ class AutomatedTrader:
         
     def start(self):
         """Start the automated trading"""
+        if self.running:
+            logging.warning("Agent already running")
+            return
+            
         self.running = True
         if self.status_callback:
             self.status_callback({"status": "starting", "message": f"Starting agent with token: {self.client.token[:8]}..."})
+            
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=1.0)  # Wait for old thread to finish
+            
         self.thread = threading.Thread(target=self._run_loop)
-        self.thread.daemon = True
+        self.thread.daemon = True  # Make thread daemon so it exits when main program exits
         self.thread.start()
+        logging.info("Agent thread started")
         
     def stop(self):
         """Stop the automated trading"""
-        self.running = False
-        if self.thread:
-            self.thread.join(timeout=1.0)  # Add timeout to prevent hanging
-        self.save_state()  # Save state on shutdown
+        if not self.running:
+            logging.warning("Agent already stopped")
+            return
             
+        self.running = False
+        if self.status_callback:
+            self.status_callback({"status": "stopping", "message": "Stopping agent..."})
+            
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=5.0)  # Give more time for clean shutdown
+            if self.thread.is_alive():
+                logging.warning("Agent thread did not stop cleanly")
+                
+        self.save_state()  # Save state on shutdown
+        logging.info("Agent stopped")
+        
     def _retry_api_call(self, func, *args, max_attempts=3):
         """Retry an API call with exponential backoff"""
         for attempt in range(max_attempts):
@@ -91,6 +113,7 @@ class AutomatedTrader:
                 
     def _run_loop(self):
         """Main automation loop"""
+        self.start_time = time.time()
         while self.running:
             try:
                 if self.status_callback:
@@ -100,19 +123,27 @@ class AutomatedTrader:
                 print(f"Cycle result: {result}", file=sys.stderr)
                 if result and self.status_callback and result["status"] != "idle":  # Only show meaningful status updates
                     self.status_callback(result)
+                if not self.running:
+                    break
                 time.sleep(5)  # Don't overwhelm the API
             except requests.exceptions.HTTPError as e:
-                if e.response.status_code == 401:
-                    if self.status_callback:
-                        self.status_callback({"status": "error", "error": "Authentication failed. Please register or check your token."})
-                    self.stop()  # Stop the agent on auth failure
-                    break
                 if self.status_callback:
-                    self.status_callback({"status": "error", "error": str(e)})
+                    self.status_callback({
+                        'status': 'error',
+                        'error': str(e)
+                    })
+                if not self.running:
+                    break
                 time.sleep(30)  # Back off on error
             except Exception as e:
                 if self.status_callback:
-                    self.status_callback({"status": "error", "error": str(e)})
+                    self.status_callback({
+                        'status': 'error',
+                        'error': str(e)
+                    })
+                logging.error(f"Error in trader loop: {str(e)}", exc_info=True)
+                if not self.running:
+                    break
                 time.sleep(30)  # Back off on error
                 
     def _update_market_trends(self, market_symbol: str, good_symbol: str, price: int):
@@ -143,7 +174,8 @@ class AutomatedTrader:
             
             # Get all waypoints in system
             waypoints = self._retry_api_call(self.client.get_waypoints, system)
-            markets = [w for w in waypoints.get("data", []) if w.get("type") == "MARKETPLACE"]
+            markets = [w for w in waypoints.get("data", []) 
+                      if w.get("type") == "MARKETPLACE"]
             asteroids = [w for w in waypoints.get("data", []) 
                         if w.get("type") == "ASTEROID" and 
                         any(t.get("symbol") == "COMMON_METAL_DEPOSITS" for t in w.get("traits", []))]
@@ -193,16 +225,438 @@ class AutomatedTrader:
                 self.status_callback({"status": "error", "error": f"Route planning error: {str(e)}"})
             return None
 
-    def _update_ship_states(self, ships_data: List[Dict[str, Any]]):
-        """Update tracked ship states"""
-        for ship in ships_data:
-            symbol = ship.get("symbol")
-            if symbol:
-                self.ship_states[symbol] = {
-                    "nav": ship.get("nav", {}),
-                    "cargo": ship.get("cargo", {}),
-                    "fuel": ship.get("fuel", {})
-                }
+    def _ensure_mining_ship(self) -> Dict[str, Any]:
+        """
+        Ensure we have a mining ship.
+        Returns:
+            Dict with status and ship data
+        """
+        try:
+            # Check current ships
+            ships = self._retry_api_call(self.client.get_my_ships)
+            
+            # First check if we have any mining ships
+            if ships.get("data"):
+                mining_ships = [s for s in ships.get("data", []) 
+                              if any(m.get("symbol", "").startswith("MOUNT_MINING_LASER") 
+                              for m in s.get("mounts", []))]
+                if mining_ships:
+                    logging.info(f"Found existing mining ship: {mining_ships[0]['symbol']}")
+                    return {"status": "success", "ship": mining_ships[0]}
+
+            # No mining ships, try to purchase one
+            # Try mining drone first as it's usually cheapest
+            result = self._purchase_ship("SHIP_MINING_DRONE")
+            if result["status"] == "success":
+                return result
+
+            # If mining drone not available/affordable, try other ships that can be equipped for mining
+            mining_capable_ships = [
+                "SHIP_LIGHT_HAULER",  # Can be equipped with mining laser
+                "SHIP_HEAVY_FREIGHTER"  # Can be equipped with mining laser
+            ]
+
+            for ship_type in mining_capable_ships:
+                result = self._purchase_ship(ship_type)
+                if result["status"] == "success":
+                    return result
+
+            return {"status": "error", "message": "Could not acquire any mining capable ships"}
+
+        except Exception as e:
+            logging.error(f"Error ensuring mining ship: {e}")
+            return {"status": "error", "message": str(e)}
+
+    def _prepare_ship_for_mining(self, ship_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Prepare a ship for mining by:
+        1. Finding a market that sells mining equipment
+        2. Navigating to that market
+        3. Purchasing the equipment
+        """
+        try:
+            ship_symbol = ship_data.get("symbol")
+            current_system = ship_data.get("nav", {}).get("systemSymbol")
+            
+            # Check if ship already has mining equipment
+            for mount in ship_data.get("mounts", []):
+                if "MINING_LASER" in mount.get("symbol", ""):
+                    return {"status": "ready"}
+                    
+            # Find a market that sells mining equipment
+            waypoints = self._retry_api_call(self.client.get_waypoints, current_system)
+            markets = [w for w in waypoints.get("data", []) if w.get("type") == "MARKETPLACE"]
+            
+            for market in markets:
+                market_data = self._retry_api_call(
+                    self.client.get_market,
+                    current_system,
+                    market.get("symbol")
+                )
+                
+                # Look for mining equipment in the market
+                if market_data.get("data", {}).get("tradeGoods"):
+                    for good in market_data["data"]["tradeGoods"]:
+                        if "MINING_LASER" in good.get("symbol", ""):
+                            # Navigate to market if needed
+                            if ship_data.get("nav", {}).get("waypointSymbol") != market.get("symbol"):
+                                nav_result = self._retry_api_call(
+                                    self.client.navigate_ship,
+                                    ship_symbol,
+                                    market.get("symbol")
+                                )
+                                logging.info(f"Navigation result: {nav_result}")
+                                
+                                # Wait for navigation to complete
+                                nav_data = nav_result.get("data", {}).get("nav", {})
+                                arrival_time = nav_data.get("route", {}).get("arrival")
+                                if arrival_time:
+                                    wait_time = max(0, (arrival_time - time.time()) + 1)
+                                    logging.info(f"Waiting {wait_time} seconds for navigation to complete...")
+                                    time.sleep(wait_time)
+                                
+                                # Dock at the market
+                                self._retry_api_call(
+                                    self.client.dock_ship,
+                                    ship_symbol
+                                )
+                                
+                            # Purchase mining equipment
+                            purchase_result = self._retry_api_call(
+                                self.client.purchase_ship_mount,
+                                ship_symbol,
+                                good.get("symbol")
+                            )
+                            logging.info(f"Mount purchase result: {purchase_result}")
+                            return {"status": "ready"}
+                            
+            return {"status": "error", "message": "No mining equipment available for purchase"}
+            
+        except Exception as e:
+            logging.error(f"Error preparing ship for mining: {str(e)}")
+            return {"status": "error", "message": str(e)}
+            
+    def _handle_mining_contract(self, contract: Dict[str, Any]) -> None:
+        """Handle a mining contract by finding an asteroid field and mining resources"""
+        try:
+            # Get our ships
+            ships = self._retry_api_call(self.client.get_my_ships).get("data", [])
+            if not ships:
+                # No ships, try to buy one
+                purchase_result = self._purchase_mining_ship()
+                if purchase_result.get("status") != "success":
+                    raise Exception(f"Failed to purchase mining ship: {purchase_result.get('message')}")
+                ships = self._retry_api_call(self.client.get_my_ships).get("data", [])
+                
+            # Get ship location and system
+            ship = ships[0]  # We should already have a mining ship
+            ship_symbol = ship.get("symbol")
+            
+            # Log ship details
+            logging.info(f"Ship details: {json.dumps(ship, indent=2)}")
+            
+            # Get contract details
+            contract_id = contract.get("id")
+            terms = contract.get("terms", {})
+            deliver = terms.get("deliver", [{}])[0]
+            target_good = deliver.get("tradeSymbol")
+            target_units = deliver.get("unitsRequired", 0)
+            destination = deliver.get("destinationSymbol")
+            
+            # Get all waypoints in the current system
+            waypoints = self._retry_api_call(self.client.get_waypoints, ship.get("nav", {}).get("systemSymbol"))
+            if not waypoints or not waypoints.get("data"):
+                raise Exception(f"No waypoints found in system {ship.get('nav', {}).get('systemSymbol')}")
+                
+            # Log available waypoint types for debugging
+            waypoint_types = set(w.get("type") for w in waypoints.get("data", []))
+            logging.info(f"Available waypoint types in system {ship.get('nav', {}).get('systemSymbol')}: {waypoint_types}")
+            
+            # Find asteroid fields
+            asteroid_fields = [w for w in waypoints.get("data", [])
+                             if w.get("type") in ("ASTEROID", "ENGINEERED_ASTEROID")]
+            
+            if not asteroid_fields:
+                raise Exception(f"No asteroid fields found in system {ship.get('nav', {}).get('systemSymbol')}")
+                
+            # Find asteroid field with required resource
+            target_field = None
+            for field in asteroid_fields:
+                # Get waypoint details to check traits
+                field_details = self._retry_api_call(
+                    self.client.get_waypoint,
+                    ship.get("nav", {}).get("systemSymbol"),
+                    field.get("symbol")
+                )
+                if field_details and field_details.get("data"):
+                    traits = field_details.get("data", {}).get("traits", [])
+                    if any(t.get("symbol") == "COMMON_METAL_DEPOSITS" for t in traits):
+                        target_field = field
+                        break
+                        
+            if not target_field:
+                # If no field with COMMON_METAL_DEPOSITS found, just use current field
+                current_waypoint = ship.get("nav", {}).get("waypointSymbol")
+                if any(f.get("symbol") == current_waypoint for f in asteroid_fields):
+                    target_field = next(f for f in asteroid_fields if f.get("symbol") == current_waypoint)
+                else:
+                    target_field = asteroid_fields[0]
+                
+            logging.info(f"Selected asteroid field: {target_field}")
+            
+            while True:
+                # Get current ship status
+                ship = self._retry_api_call(self.client.get_ship, ship_symbol).get("data", {})
+                nav = ship.get("nav", {})
+                current_status = nav.get("status")
+                current_waypoint = nav.get("waypointSymbol")
+                
+                # Handle different ship states
+                if current_status == "IN_TRANSIT":
+                    # Wait for arrival
+                    route = nav.get("route", {})
+                    arrival_time = route.get("arrival")
+                    if arrival_time:
+                        # Parse ISO format timestamp to epoch
+                        arrival_epoch = time.mktime(time.strptime(arrival_time.split(".")[0], "%Y-%m-%dT%H:%M:%S"))
+                        current_epoch = time.time()
+                        wait_time = max(0, arrival_epoch - current_epoch + 1)
+                        
+                        if wait_time > 0:
+                            if self.status_callback:
+                                self.status_callback({
+                                    "status": "waiting",
+                                    "message": f"Waiting {wait_time:.0f}s for arrival at {route.get('destination', {}).get('symbol')}"
+                                })
+                            time.sleep(wait_time)
+                            continue  # Get updated ship status
+                            
+                # Navigate to asteroid field if needed
+                if current_waypoint != target_field.get("symbol"):
+                    # First orbit if we're docked
+                    if current_status == "DOCKED":
+                        logging.info("Orbiting before navigation")
+                        self._retry_api_call(self.client.orbit_ship, ship_symbol)
+                        continue  # Get updated ship status
+                        
+                    # Then navigate if we're in orbit
+                    if current_status == "IN_ORBIT":
+                        # Get destination waypoint details
+                        dest_waypoint = self._retry_api_call(
+                            self.client.get_waypoint,
+                            ship.get("nav", {}).get("systemSymbol"),
+                            target_field.get("symbol")
+                        ).get("data", {})
+                        
+                        can_navigate, fuel_needed = self._can_navigate_to(ship, dest_waypoint)
+                        
+                        if not can_navigate:
+                            logging.info(f"Need {fuel_needed} fuel for navigation but only have {ship.get('fuel', {}).get('current', 0)}")
+                            # Find nearest fuel station
+                            waypoints = self._retry_api_call(
+                                self.client.get_waypoints,
+                                ship.get("nav", {}).get("systemSymbol")
+                            ).get("data", [])
+                            fuel_stations = [w for w in waypoints if any(t.get("symbol") == "MARKETPLACE" for t in w.get("traits", []))]
+                            
+                            if fuel_stations:
+                                nearest_station = min(
+                                    fuel_stations,
+                                    key=lambda w: ((w.get("x", 0) - ship.get("nav", {}).get("route", {}).get("destination", {}).get("x", 0))**2 + 
+                                                 (w.get("y", 0) - ship.get("nav", {}).get("route", {}).get("destination", {}).get("y", 0))**2)**0.5
+                                )
+                                can_reach_station, station_fuel = self._can_navigate_to(ship, nearest_station)
+                                
+                                if can_reach_station:
+                                    logging.info(f"Found reachable fuel station at {nearest_station.get('symbol')}")
+                                    # Navigate to fuel station
+                                    nav_result = self._retry_api_call(
+                                        self.client.navigate_ship,
+                                        ship_symbol,
+                                        nearest_station.get("symbol")
+                                    )
+                                    if self.status_callback:
+                                        self.status_callback({
+                                            "status": "navigating",
+                                            "destination": nearest_station.get("symbol"),
+                                            "reason": "refueling"
+                                        })
+                                    continue  # Get updated ship status
+                                else:
+                                    logging.error(f"Cannot reach any fuel stations. Need {station_fuel} fuel but only have {ship.get('fuel', {}).get('current', 0)}")
+                                    raise Exception("Ship stranded without fuel")
+                            else:
+                                logging.error("No fuel stations found in system")
+                                raise Exception("No fuel stations available")
+                        
+                        # Try to navigate to target field
+                        nav_result = self._retry_api_call(
+                            self.client.navigate_ship,
+                            ship_symbol,
+                            target_field.get("symbol")
+                        )
+                        if self.status_callback:
+                            self.status_callback({
+                                "status": "navigating",
+                                "destination": target_field.get("symbol")
+                            })
+                        continue  # Get updated ship status
+                    
+                # Enter orbit if needed
+                if current_status != "IN_ORBIT":
+                    logging.info("Entering orbit")
+                    self._retry_api_call(self.client.orbit_ship, ship_symbol)
+                    continue  # Get updated ship status
+                    
+                # Check if we can mine
+                mining_check = self._retry_api_call(self.client.can_ship_mine, ship_symbol)
+                if not mining_check.get("can_mine"):
+                    if "cooldown" in mining_check.get("reason", "").lower():
+                        # Get cooldown details
+                        cooldown = self._retry_api_call(self.client.get_ship_cooldown, ship_symbol).get("data", {})
+                        if cooldown:
+                            wait_time = cooldown.get("remainingSeconds", 0)
+                            if wait_time > 0:
+                                if self.status_callback:
+                                    self.status_callback({
+                                        "status": "cooling_down",
+                                        "message": f"Waiting {wait_time}s for cooldown"
+                                    })
+                                time.sleep(wait_time)
+                                continue
+                    else:
+                        raise Exception(f"Cannot mine: {mining_check.get('reason')}")
+                
+                # Extract resources
+                extract_result = self._retry_api_call(self.client.extract_resources, ship_symbol)
+                if extract_result.get("data"):
+                    if self.status_callback:
+                        self.status_callback({
+                            "status": "mining",
+                            "result": extract_result.get("data")
+                        })
+                    
+                    # Check if we have enough of the target resource
+                    cargo = extract_result.get("data", {}).get("cargo", {})
+                    inventory = cargo.get("inventory", [])
+                    target_resource = next(
+                        (item for item in inventory if item.get("symbol") == target_good),
+                        None
+                    )
+                    
+                    if target_resource and target_resource.get("units", 0) >= target_units:
+                        # We have enough, deliver to destination
+                        if current_waypoint != destination:
+                            # First orbit if we're docked
+                            if current_status == "DOCKED":
+                                logging.info("Orbiting before navigation")
+                                self._retry_api_call(self.client.orbit_ship, ship_symbol)
+                                continue  # Get updated ship status
+                                
+                            # Then navigate if we're in orbit
+                            if current_status == "IN_ORBIT":
+                                # Get destination waypoint details
+                                dest_waypoint = self._retry_api_call(
+                                    self.client.get_waypoint,
+                                    ship.get("nav", {}).get("systemSymbol"),
+                                    destination
+                                ).get("data", {})
+                                
+                                can_navigate, fuel_needed = self._can_navigate_to(ship, dest_waypoint)
+                                
+                                if not can_navigate:
+                                    logging.info(f"Need {fuel_needed} fuel for navigation but only have {ship.get('fuel', {}).get('current', 0)}")
+                                    # Find nearest fuel station
+                                    waypoints = self._retry_api_call(
+                                        self.client.get_waypoints,
+                                        ship.get("nav", {}).get("systemSymbol")
+                                    ).get("data", [])
+                                    fuel_stations = [w for w in waypoints if any(t.get("symbol") == "MARKETPLACE" for t in w.get("traits", []))]
+                                    
+                                    if fuel_stations:
+                                        nearest_station = min(
+                                            fuel_stations,
+                                            key=lambda w: ((w.get("x", 0) - ship.get("nav", {}).get("route", {}).get("destination", {}).get("x", 0))**2 + 
+                                                         (w.get("y", 0) - ship.get("nav", {}).get("route", {}).get("destination", {}).get("y", 0))**2)**0.5
+                                        )
+                                        can_reach_station, station_fuel = self._can_navigate_to(ship, nearest_station)
+                                        
+                                        if can_reach_station:
+                                            logging.info(f"Found reachable fuel station at {nearest_station.get('symbol')}")
+                                            # Navigate to fuel station
+                                            nav_result = self._retry_api_call(
+                                                self.client.navigate_ship,
+                                                ship_symbol,
+                                                nearest_station.get("symbol")
+                                            )
+                                            if self.status_callback:
+                                                self.status_callback({
+                                                    "status": "navigating",
+                                                    "destination": nearest_station.get("symbol"),
+                                                    "reason": "refueling"
+                                                })
+                                            continue  # Get updated ship status
+                                        else:
+                                            logging.error(f"Cannot reach any fuel stations. Need {station_fuel} fuel but only have {ship.get('fuel', {}).get('current', 0)}")
+                                            raise Exception("Ship stranded without fuel")
+                                    else:
+                                        logging.error("No fuel stations found in system")
+                                        raise Exception("No fuel stations available")
+                                
+                                # Try to navigate to destination
+                                nav_result = self._retry_api_call(
+                                    self.client.navigate_ship,
+                                    ship_symbol,
+                                    destination
+                                )
+                                if self.status_callback:
+                                    self.status_callback({
+                                        "status": "navigating",
+                                        "destination": destination
+                                    })
+                                continue  # Get updated ship status
+                        
+                        # Dock at destination if needed
+                        if current_status != "DOCKED":
+                            self._retry_api_call(self.client.dock_ship, ship_symbol)
+                        
+                        # Deliver goods
+                        deliver_result = self._retry_api_call(
+                            self.client.fulfill_contract,
+                            contract_id,
+                            ship_symbol,
+                            target_good,
+                            target_units
+                        )
+                        if deliver_result.get("data"):
+                            if self.status_callback:
+                                self.status_callback({
+                                    "status": "delivered_contract",
+                                    "contract": contract_id,
+                                    "good": target_good,
+                                    "units": target_units
+                                })
+                            return
+                
+                # Handle mining cooldown
+                cooldown = extract_result.get("data", {}).get("cooldown", {})
+                if cooldown:
+                    wait_time = cooldown.get("remainingSeconds", 0)
+                    if wait_time > 0:
+                        if self.status_callback:
+                            self.status_callback({
+                                "status": "cooling_down",
+                                "message": f"Waiting {wait_time}s for cooldown"
+                            })
+                        time.sleep(wait_time)
+                        
+        except Exception as e:
+            if self.status_callback:
+                self.status_callback({
+                    "status": "error",
+                    "error": f"Mining error: {str(e)}"
+                })
+            logging.error(f"Error in mining contract: {str(e)}", exc_info=True)
 
     def _find_nearest_market(self, ship_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Find the nearest market to trade at"""
@@ -224,248 +678,202 @@ class AutomatedTrader:
             print(f"Error finding nearest market: {e}")
             return None
 
+    def _refuel_ship(self, ship_symbol: str, current_waypoint: str) -> None:
+        """Refuel ship at current waypoint if possible"""
+        try:
+            # First dock if needed
+            ship = self._retry_api_call(self.client.get_ship, ship_symbol).get("data", {})
+            if ship.get("nav", {}).get("status") != "DOCKED":
+                self._retry_api_call(self.client.dock_ship, ship_symbol)
+                
+            # Then refuel
+            refuel_result = self._retry_api_call(self.client.refuel_ship, ship_symbol)
+            if refuel_result:
+                logging.info(f"Refueled ship at {current_waypoint}")
+                return True
+        except Exception as e:
+            logging.error(f"Error refueling: {str(e)}")
+        return False
+
+    def _can_navigate_to(self, ship_data: Dict[str, Any], destination: Dict[str, Any]) -> Tuple[bool, int]:
+        """
+        Check if ship has enough fuel to navigate to destination.
+        Returns (can_navigate, fuel_required)
+        """
+        current_x = ship_data.get("nav", {}).get("route", {}).get("destination", {}).get("x", 0)
+        current_y = ship_data.get("nav", {}).get("route", {}).get("destination", {}).get("y", 0)
+        dest_x = destination.get("x", 0)
+        dest_y = destination.get("y", 0)
+        
+        # Calculate distance
+        distance = ((dest_x - current_x) ** 2 + (dest_y - current_y) ** 2) ** 0.5
+        
+        # Estimate fuel required (this is a rough estimate)
+        fuel_required = int(distance)
+        fuel_available = ship_data.get("fuel", {}).get("current", 0)
+        
+        return fuel_available >= fuel_required, fuel_required
+
     def run_cycle(self) -> Dict[str, Any]:
         """Run one cycle of automated trading"""
         if not self.running:
             logging.debug("Agent cycle skipped - agent not running")
             return {"status": "stopped"}
-        
+
         # Check error rate before proceeding
         error_rate = (self.client.error_count / self.client.request_count * 100) if self.client.request_count > 0 else 0
         if error_rate > 20:  # Pause if error rate exceeds 20%
             logging.warning(f"Pausing agent due to high error rate: {error_rate:.1f}%")
             return {"status": "paused_high_errors"}
-            
+
         logging.debug("Starting agent cycle")
-            
+
         try:
             # Get current status once at start of cycle
             if self.status_callback:
                 self.status_callback({"status": "info", "message": "Checking status..."})
 
-            # Check current ship status first
-            ships = self._retry_api_call(self.client.get_my_ships)
-            if ships.get("data"):
-                for ship in ships["data"]:
-                    nav = ship.get("nav", {})
-                    current_status = nav.get("status")
-                    
-                    # If already mining, skip other API calls
-                    if current_status == "IN_ORBIT":
-                        current_waypoint = nav.get("waypointSymbol")
-                        if current_waypoint:
-                            # Only fetch waypoints if we need to check for asteroids
-                            waypoints = self._retry_api_call(self.client.get_waypoints, nav.get("systemSymbol"))
-                            current_wp_data = next((w for w in waypoints.get("data", []) 
-                                                  if w.get("symbol") == current_waypoint 
-                                                  and w.get("type") == "ASTEROID"), None)
-                            if current_wp_data:
-                                nav_status = nav.get("status", "UNKNOWN")
-                                try:
-                                    logging.info(f"Attempting to mine at waypoint {current_waypoint}")
-                                    if nav_status != "IN_ORBIT":
-                                        logging.warning(f"Ship must be in orbit to mine. Current status: {nav_status}")
-                                        # Try to orbit if docked
-                                        if nav_status == "DOCKED":
-                                            self._retry_api_call(self.client.orbit_ship, ship["symbol"])
-                                        continue
-                                    
-                                    self.mining_attempts += 1
-                                    result = self._retry_api_call(self.client.extract_resources, ship["symbol"])
-                                    if result:
-                                        self.mining_successes += 1
-                                        return {"status": "mining", "ship": ship["symbol"], "result": result}
-                                except Exception as e:
-                                    error_msg = str(e).lower()
-                                    if "cooldown" in error_msg:
-                                        logging.debug(f"Mining cooldown at {current_waypoint}")
-                                    elif "cargo" in error_msg:
-                                        logging.warning(f"Cargo full at {current_waypoint}")
-                                    else:
-                                        logging.error(f"Mining error at {current_waypoint}: {e}")
-                
-            # Only check contracts if we have cargo and aren't currently mining
-            if any(self.ship_cargo.values()) and not any(ship.get("nav", {}).get("status") == "IN_ORBIT" for ship in ships.get("data", [])):
+            # First check for contracts
+            try:
                 contracts = self._retry_api_call(self.client.get_contracts)
-                if contracts.get("data"):
-                    for contract in contracts["data"]:
-                        # Accept open contracts
-                        if not contract["accepted"]:  # Changed from status to accepted
-                            self._retry_api_call(self.client.accept_contract, contract["id"])
-                            return {"status": "accepted_contract", "contract": contract["id"]}
-                        # Fulfill accepted contracts
-                        elif contract["accepted"] and not contract["fulfilled"]:
-                            # Check if we have the required goods
-                            for term in contract.get("terms", {}).get("deliver", []):
-                                if term["unitsFulfilled"] < term["unitsRequired"]:
-                                    # Try to fulfill this term
-                                    for ship_symbol, cargo in self.ship_cargo.items():
-                                        if cargo.get("good") == term["tradeSymbol"]:
-                                            try:
-                                                self._retry_api_call(
-                                                    self.client.fulfill_contract,
-                                                    contract["id"],
-                                                    ship_symbol,
-                                                    term["tradeSymbol"],
-                                                    min(cargo.get("units", 0), term["unitsRequired"] - term["unitsFulfilled"])
-                                                )
-                                                return {"status": "fulfilled_contract", "contract": contract["id"]}
-                                            except Exception as e:
-                                                print(f"Failed to fulfill contract: {e}")
-            
-            # For each ship, try to find mining or trading opportunities 
-            for ship in ships.get("data", []):
-                try:
-                    # Check mining success rate to decide strategy
-                    mining_success_rate = (self.mining_successes / self.mining_attempts * 100) if self.mining_attempts > 0 else 0
+                if not contracts or "data" not in contracts:
+                    logging.error("Failed to get contracts data")
+                    return {"status": "error", "error": "Failed to get contracts data"}
                     
-                    # Prioritize mining if success rate is good (>50%)
-                    if mining_success_rate > 50:
-                        nav = ship.get("nav", {})
-                        nav_status = nav.get("status")
-                        system = nav.get("systemSymbol")
-                        if system and nav_status not in ("IN_TRANSIT", "IN_ORBIT"):
-                            waypoints = self._retry_api_call(self.client.get_waypoints, system)
-                            asteroids = [w for w in waypoints.get("data", []) 
-                                       if w.get("type") == "ASTEROID"]
-                            if asteroids:
-                                # Navigate to first asteroid found
-                                result = self._retry_api_call(
-                                    self.client.navigate_ship,
-                                    ship["symbol"],
-                                    asteroids[0]["symbol"]
-                                )
-                                if result:
-                                    return {"status": "navigating", "destination": asteroids[0]["symbol"]}
-                    
-                    # Try trading if mining not viable or no asteroids found
-                    route = self.find_best_trade_route(ship)
-                    if route:
-                        nav = ship.get("nav", {})
-                        current_waypoint = nav.get("waypointSymbol")
-                        
-                        if current_waypoint == route["buy_market"]:
-                            # Buy goods if we have space
-                            cargo = ship.get("cargo", {})
-                            space_available = cargo.get("capacity", 0) - cargo.get("units", 0)
-                            if space_available >= 10:
-                                result = self._retry_api_call(
-                                    self.client.buy_goods, 
-                                    ship["symbol"], 
-                                    route["good"], 
-                                    10
-                                )
-                                if result:
-                                    self.trades_completed += 1
-                                    continue  # Move to next ship
-                                else:
-                                    self.failed_trades += 1
-                        elif current_waypoint == route["sell_market"]:
-                            # Sell goods if we have them
-                            cargo = ship.get("cargo", {})
-                            if cargo.get("units", 0) > 0:
-                                result = self._retry_api_call(
-                                    self.client.sell_goods,
-                                    ship["symbol"],
-                                    route["good"],
-                                    cargo.get("units", 0)
-                                )
-                                if result:
-                                    profit = result.get("data", {}).get("transaction", {}).get("totalPrice", 0)
-                                    self.total_profits += profit
-                                    self.trades_completed += 1
-                                    continue  # Move to next ship
-                                else:
-                                    self.failed_trades += 1
+                active_contracts = [c for c in contracts.get("data", []) 
+                                  if c.get("accepted") and not c.get("fulfilled")]
+
+                # Accept a new contract if we don't have any
+                if not active_contracts:
+                    available_contracts = [c for c in contracts.get("data", []) 
+                                        if not c.get("accepted")]
+                    if available_contracts:
+                        contract = available_contracts[0]
+                        accept_result = self._retry_api_call(self.client.accept_contract, contract["id"])
+                        if accept_result and accept_result.get("data"):
+                            active_contracts = [contract]
+                            logging.info(f"Accepted new contract: {contract['id']}")
                         else:
-                            # Navigate to buy location if not already there
-                            result = self._retry_api_call(
-                                self.client.navigate_ship,
-                                ship["symbol"],
-                                route["buy_market"]
-                            )
-                            if result:
-                                continue  # Move to next ship
-                except Exception as e:
-                    print(f"Error executing trade for ship {ship['symbol']}: {e}", file=sys.stderr)
-                    continue
-            
-            # Get ship status
-            if self.status_callback:
-                self.status_callback({"status": "info", "message": "Checking ship status..."})
-            ships = self._retry_api_call(self.client.get_my_ships)
-            if not ships.get("data"):
-                return {"status": "no_ships"}
-                
-            # Update ship states
-            self._update_ship_states(ships.get("data", []))
-                
-            # For each ship
-            for ship in ships["data"]:
-                nav = ship.get("nav", {})
-                nav_status = nav.get("status")  # API uses 'status' for navigation state
-                print(f"Ship {ship['symbol']} status: {nav_status}", file=sys.stderr)
-                
-                # If docked, first try to orbit to prepare for actions
-                if nav_status == "DOCKED":
-                    try:
-                        print(f"Attempting to orbit ship {ship['symbol']}", file=sys.stderr)
-                        self._retry_api_call(self.client.orbit_ship, ship["symbol"])
-                        continue  # Move to next ship or let it take actions on next cycle
-                        # Otherwise look for trade routes
-                        route = self.find_best_trade_route(ship)
-                        if route:
-                            if nav.get("waypointSymbol") == route["buy_market"]:
-                                # Check cargo capacity before buying
-                                cargo = ship.get("cargo", {})
-                                capacity = cargo.get("capacity", 0)
-                                units = cargo.get("units", 0)
-                                space_available = capacity - units
-                                
-                                if space_available >= 10:
-                                    # Buy goods at current market
-                                    self._retry_api_call(self.client.buy_goods, ship["symbol"], route["good"], 10)
-                                    self.ship_cargo[ship["symbol"]] = cargo  # Update cargo tracking
-                                    return {"status": "bought_goods", "good": route["good"], "profit_potential": route["profit_per_unit"] * 10}
-                                else:
-                                    return {"status": "cargo_full"}
-                            elif nav.get("waypointSymbol") == route["sell_market"]:
-                                # Sell goods at current market
-                                self._retry_api_call(self.client.sell_goods, ship["symbol"], route["good"], 10)
-                                return {"status": "sold_goods", "good": route["good"]}
-                    except Exception as e:
-                        print(f"Trading error: {str(e)}")
-                
-                # If in orbit, look for trade opportunities first
-                elif nav_status == "IN_ORBIT":
-                    try:
-                        route = self.find_best_trade_route(ship)
-                        if route:
-                            nav = ship.get("nav", {})
-                            current_waypoint = nav.get("waypointSymbol")
-                            if current_waypoint != route["buy_market"]:
-                                print(f"Navigating to buy market {route['buy_market']}", file=sys.stderr)  # Debug print
-                                result = self._retry_api_call(
-                                    self.client.navigate_ship,
-                                    ship["symbol"],
-                                    route["buy_market"]
-                                )
-                                if result:
-                                    return {"status": "navigating", "destination": route["buy_market"]}
-                            elif current_waypoint != route["sell_market"]:
-                                print(f"Navigating to sell market {route['sell_market']}", file=sys.stderr)  # Debug print
-                                result = self._retry_api_call(
-                                    self.client.navigate_ship,
-                                    ship["symbol"],
-                                    route["sell_market"]
-                                )
-                                if result:
-                                    return {"status": "navigating", "destination": route["sell_market"]}
-                    except Exception as e:
-                        print(f"Navigation error: {str(e)}")
-            
-            self.cycle_count += 1
+                            logging.error("Failed to accept contract")
+                            return {"status": "error", "error": "Failed to accept contract"}
+                    else:
+                        logging.info("No contracts available")
+                        return {"status": "idle", "message": "No contracts available"}
+                        
+            except Exception as e:
+                logging.error(f"Error getting contracts: {str(e)}")
+                return {"status": "error", "error": f"Error getting contracts: {str(e)}"}
+
+            # Then ensure we have a mining ship
+            mining_ship_result = self._ensure_mining_ship()
+            if mining_ship_result["status"] == "error":
+                logging.error(f"Mining ship error: {mining_ship_result['message']}")
+                return mining_ship_result
+            elif mining_ship_result["status"] == "success":
+                logging.info("Mining ship ready")
+
+            # If we have both a contract and a mining ship, start mining
+            if active_contracts and mining_ship_result["status"] == "success":
+                ship = mining_ship_result["ship"]
+                contract = active_contracts[0]
+                return self._handle_mining_contract(contract)
+
             return {"status": "idle"}
-            
+
         except Exception as e:
+            logging.error(f"Error in agent cycle: {str(e)}")
+            if self.status_callback:
+                self.status_callback({"status": "error", "error": str(e)})
             return {"status": "error", "error": str(e)}
+
+    def _purchase_ship(self, ship_type: str, system: str = None) -> Dict[str, Any]:
+        """
+        Purchase a specific type of ship.
+        Args:
+            ship_type: The type of ship to purchase (e.g. 'SHIP_MINING_DRONE')
+            system: Optional system to purchase in. If None, uses current system or HQ
+        Returns:
+            Dict with status and ship data if successful
+        """
+        try:
+            # Get agent details to check credits
+            agent = self._retry_api_call(self.client.get_agent)
+            credits = agent.get("data", {}).get("credits", 0)
+            logging.info(f"Agent has {credits} credits available")
+
+            # Get system to search in
+            if not system:
+                headquarters = agent.get("data", {}).get("headquarters", "")
+                system = headquarters.split("-")[0:2]  # Get X1-FY5 instead of just X1
+                system = "-".join(system) if system else None
+            if not system:
+                return {"status": "error", "message": "Could not determine system"}
+
+            logging.info(f"Searching for ships in system {system}")
+
+            # Find shipyards in the system
+            waypoints = self._retry_api_call(self.client.get_waypoints, system)
+            shipyards = [w for w in waypoints.get("data", []) 
+                       if any(t.get("symbol") == "SHIPYARD" for t in w.get("traits", []))]
+
+            if not shipyards:
+                return {"status": "error", "message": f"No shipyards found in system {system}"}
+
+            # Try each shipyard until we find one with our desired ship
+            for shipyard in shipyards:
+                shipyard_data = self._retry_api_call(
+                    self.client.get_shipyard, 
+                    system, 
+                    shipyard["symbol"]
+                )
+
+                ships_for_sale = shipyard_data.get("data", {}).get("ships", [])
+                available_ships = [s for s in ships_for_sale 
+                                if s.get("type") == ship_type and 
+                                s.get("purchasePrice", float('inf')) <= credits]
+
+                if available_ships:
+                    # Found a ship we can afford, purchase it
+                    result = self._retry_api_call(
+                        self.client.purchase_ship,
+                        ship_type,
+                        shipyard["symbol"]
+                    )
+
+                    if result:
+                        ship_data = result.get("data", {})
+                        logging.info(f"Successfully purchased {ship_type}: {ship_data.get('symbol')}")
+                        return {"status": "success", "ship": ship_data}
+
+            return {"status": "error", "message": f"No affordable {ship_type} ships found in system {system}"}
+
+        except Exception as e:
+            logging.error(f"Error purchasing ship: {e}")
+            return {"status": "error", "message": str(e)}
+
+    def run(self):
+        """Run the automated trader"""
+        try:
+            # Check if we have any active contracts
+            contracts = self._retry_api_call(self.client.get_contracts)
+            if not contracts or not contracts.get("data"):
+                # No contracts, try to get a new one
+                self._get_new_contract()
+                return
+            
+            # Handle the first contract
+            contract = contracts["data"][0]
+            if contract["type"] == "MINING":
+                try:
+                    self._handle_mining_contract(contract)
+                except Exception as e:
+                    logging.error(f"Error in mining contract: {str(e)}")
+                    # Stop running to prevent excessive API calls
+                    raise Exception("Stopping agent due to error") from e
+            else:
+                logging.info(f"Unsupported contract type: {contract['type']}")
+                
+        except Exception as e:
+            logging.error(f"Error in trader run: {str(e)}")
+            # Stop running to prevent excessive API calls
+            raise

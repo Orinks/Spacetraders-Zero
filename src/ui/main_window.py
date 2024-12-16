@@ -288,38 +288,40 @@ class MainWindow(wx.Frame):
     def on_agent_update(self, status: Dict[str, Any]):
         """Handle agent status updates"""
         try:
-            if status["status"] == "error":
+            if not status:
+                return
+            
+            if status.get('status') == 'error':
                 error_msg = status.get('error', 'Unknown error')
                 self.status_text.AppendText(f"Error: {error_msg}\n")
                 self.tray_icon.SetIcon(wx.Icon(wx.ArtProvider.GetBitmap(wx.ART_ERROR, size=(16, 16))), 
-                                     f"SpaceTraders Zero - Error: {status['error']}")
-            elif status["status"] == "accepted_contract":
-                self.status_text.AppendText(f"Accepted contract: {status['contract']}\n")
+                                     f"SpaceTraders Zero - Error: {status.get('error', 'Unknown error')}")
+            elif status.get('status') == 'accepted_contract':
+                self.status_text.AppendText(f"Accepted contract: {status.get('contract', 'Unknown contract')}\n")
                 self.tray_icon.SetIcon(wx.Icon(wx.ArtProvider.GetBitmap(wx.ART_INFORMATION, size=(16, 16))), 
-                                     f"SpaceTraders Zero - Contract accepted: {status['contract']}")
+                                     f"SpaceTraders Zero - Contract accepted: {status.get('contract', 'Unknown contract')}")
                 self.on_refresh_contracts(None)  # Refresh contracts list
-                self.on_refresh_contracts(None)  # Refresh contracts list
-            elif status["status"] == "bought_goods":
-                self.status_text.AppendText(f"Bought goods: {status['good']}\n")
+            elif status.get('status') == 'bought_goods':
+                self.status_text.AppendText(f"Bought goods: {status.get('good', 'Unknown good')}\n")
                 self.tray_icon.SetIcon(wx.Icon(wx.ArtProvider.GetBitmap(wx.ART_INFORMATION, size=(16, 16))), 
-                                     f"SpaceTraders Zero - Bought: {status['good']}")
+                                     f"SpaceTraders Zero - Bought: {status.get('good', 'Unknown good')}")
                 self.on_refresh_market(None)  # Refresh market data
-            elif status["status"] == "sold_goods":
-                self.status_text.AppendText(f"Sold goods: {status['good']}\n")
+            elif status.get('status') == 'sold_goods':
+                self.status_text.AppendText(f"Sold goods: {status.get('good', 'Unknown good')}\n")
                 self.tray_icon.SetIcon(wx.Icon(wx.ArtProvider.GetBitmap(wx.ART_INFORMATION, size=(16, 16))), 
-                                     f"SpaceTraders Zero - Sold: {status['good']}")
+                                     f"SpaceTraders Zero - Sold: {status.get('good', 'Unknown good')}")
                 self.on_refresh_market(None)  # Refresh market data
-            elif status["status"] == "navigating":
-                self.status_text.AppendText(f"Navigating to: {status['destination']}\n")
+            elif status.get('status') == 'navigating':
+                self.status_text.AppendText(f"Navigating to: {status.get('destination', 'Unknown destination')}\n")
                 self.tray_icon.SetIcon(wx.Icon(wx.ArtProvider.GetBitmap(wx.ART_INFORMATION, size=(16, 16))), 
-                                     f"SpaceTraders Zero - Navigating to: {status['destination']}")
+                                     f"SpaceTraders Zero - Navigating to: {status.get('destination', 'Unknown destination')}")
                 self.on_refresh_ships(None)  # Refresh ship status
-            elif status["status"] == "starting":
-                self.status_text.AppendText(f"{status['message']}\n")
-            elif status["status"] == "mining":
+            elif status.get('status') == 'starting':
+                self.status_text.AppendText(f"{status.get('message', 'Unknown message')}\n")
+            elif status.get('status') == 'mining':
                 self.status_text.AppendText(f"Mining resources at {status.get('result', {}).get('extraction', {}).get('shipSymbol', 'unknown location')}\n")
-            elif status["status"] == "navigating":
-                self.status_text.AppendText(f"Navigating to: {status['destination']}\n")
+            elif status.get('status') == 'navigating':
+                self.status_text.AppendText(f"Navigating to: {status.get('destination', 'Unknown destination')}\n")
         except RuntimeError:
             # UI has been destroyed, stop the agent
             if hasattr(self, 'agent'):
