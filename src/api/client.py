@@ -3,8 +3,11 @@ import sys
 import time
 import logging
 import requests
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+import json
 from dotenv import load_dotenv
+from collections import deque
+from datetime import datetime, timedelta
 
 class SpaceTradersClient:
     """Client for interacting with SpaceTraders API"""
@@ -15,6 +18,13 @@ class SpaceTradersClient:
         self.base_url = os.getenv("SPACETRADERS_API_URL", "https://api.spacetraders.io/v2")
         self.token = os.getenv("SPACETRADERS_TOKEN")
         
+        # Rate limiting setup
+        self.requests_per_second = 2  # Default to 2 requests per second
+        self.request_window = 1.0  # Window in seconds
+        self.request_timestamps = deque(maxlen=10)  # Keep track of last 10 requests
+        self.burst_limit = 10  # Maximum burst requests
+        self.min_request_interval = 1.0 / self.requests_per_second
+        
         # If no token is found, try to register a new agent
         if not self.token:
             logging.info("No token found, attempting to register new agent...")
@@ -24,274 +34,260 @@ class SpaceTradersClient:
                 result = self.register_new_agent(agent_name, "COSMIC")
                 if result and result.get("data", {}).get("token"):
                     self.token = result["data"]["token"]
-                    # Save token to .env file
-                    with open(".env", "w") as f:
-                        f.write(f"SPACETRADERS_TOKEN={self.token}\n")
                     logging.info("Successfully registered new agent and saved token")
+                else:
+                    logging.error("Failed to register new agent: No token received.")
+                    sys.exit(1)
             except Exception as e:
                 logging.error(f"Failed to register new agent: {str(e)}")
+                sys.exit(1)
                 
         self.error_count = 0
         self.request_count = 0
         self.last_error_time = None
         self.error_history = []  # List of (timestamp, endpoint) tuples
+        self.last_error_reset = time.time()
             
+    def _wait_for_rate_limit(self):
+        """Wait if necessary to respect rate limits"""
+        current_time = time.time()
+        
+        # Clean up old timestamps
+        while self.request_timestamps and current_time - self.request_timestamps[0] > self.request_window:
+            self.request_timestamps.popleft()
+        
+        # If we've hit our burst limit, wait for the oldest request to expire
+        if len(self.request_timestamps) >= self.burst_limit:
+            wait_time = self.request_timestamps[0] + self.request_window - current_time
+            if wait_time > 0:
+                time.sleep(wait_time)
+        
+        # Ensure minimum interval between requests
+        if self.request_timestamps:
+            elapsed = current_time - self.request_timestamps[-1]
+            if elapsed < self.min_request_interval:
+                time.sleep(self.min_request_interval - elapsed)
+        
+        self.request_timestamps.append(time.time())
+
     def _get_headers(self) -> Dict[str, str]:
         """Get headers for API requests"""
         if not self.token:
             logging.warning("No token available for request. Please register an agent first.")
             raise ValueError("No token available for request. Please register an agent first.")
-        # Ensure token has Bearer prefix and strip any whitespace
         auth_token = self.token.strip()
         if not auth_token.startswith("Bearer "):
             auth_token = f"Bearer {auth_token}"
-        logging.debug(f"Using auth token: {auth_token[:15]}...")
         return {
             "Authorization": auth_token,
             "Content-Type": "application/json"
         }
+
+    def _handle_error(self, endpoint: str, error: Exception) -> None:
+        """Handle API errors and track error rate"""
+        current_time = time.time()
+        self.error_count += 1
+        self.error_history.append((current_time, endpoint))
+        self.last_error_time = current_time
         
+        # Clean up old errors (older than 5 minutes)
+        self.error_history = [(t, e) for t, e in self.error_history if t > current_time - 300]
+        
+        # Reset error count if it's been more than 5 minutes since last reset
+        if current_time - self.last_error_reset > 300:
+            self.error_count = len(self.error_history)
+            self.last_error_reset = current_time
+            
+        if isinstance(error, requests.exceptions.HTTPError):
+            logging.error(f"HTTP error on {endpoint}: {error}")
+        else:
+            logging.error(f"Error on {endpoint}: {error}")
+
+    def _make_request(self, method: str, endpoint: str, data: Optional[Dict] = None) -> Dict[str, Any]:
+        """Make a request to the SpaceTraders API with rate limiting and retries."""
+        url = f"{self.base_url}/{endpoint}"
+        headers = {"Authorization": f"Bearer {self.token}"}
+        
+        max_retries = 3
+        retry_delay = 2
+        
+        for attempt in range(max_retries):
+            try:
+                if method == "GET":
+                    response = requests.get(url, headers=headers, timeout=10)
+                elif method == "POST":
+                    response = requests.post(url, headers=headers, json=data, timeout=10)
+                elif method == "PATCH":
+                    response = requests.patch(url, headers=headers, json=data, timeout=10)
+                else:
+                    raise ValueError(f"Unsupported HTTP method: {method}")
+                
+                if response.status_code == 429:  # Rate limit hit
+                    retry_after = int(response.headers.get('Retry-After', retry_delay))
+                    logging.warning(f"Rate limit hit, waiting {retry_after} seconds...")
+                    time.sleep(retry_after)
+                    continue
+                
+                response.raise_for_status()
+                return response.json()
+                
+            except requests.exceptions.RequestException as e:
+                if attempt < max_retries - 1:
+                    logging.warning(f"Request failed: {str(e)}")
+                    logging.warning(f"Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    logging.error(f"HTTP error on {endpoint}: {str(e)}")
+                    raise RuntimeError(f"Failed to connect to SpaceTraders API: {str(e)}")
+        
+        raise RuntimeError("Maximum retries exceeded with no specific error")
+
     def register_new_agent(self, symbol: str, faction: str = "COSMIC") -> Dict[str, Any]:
         """Register a new agent and get access token"""
         logging.info(f"Registering new agent {symbol} with faction {faction}")
-        response = requests.post(
-            f"{self.base_url}/register",
-            json={
-                "symbol": symbol,
-                "faction": faction,
-                "email": "codeium@example.com"
-            },
-            headers={
-                "Content-Type": "application/json",
-                "Version": "v2.2.0",
-                "ResetDate": "2024-10-27"
-            }
-        )
-        logging.debug(f"Registration response: {response.status_code}")
-        response.raise_for_status()
-        result = response.json()
+        response = self._make_request("POST", "register", {
+            "symbol": symbol,
+            "faction": faction,
+            "email": "codeium@example.com"
+        })
         # Extract token from data field and store it
-        self.token = result.get("data", {}).get("token")
+        self.token = response.get("data", {}).get("token")
         if not self.token:
             raise ValueError("No token received in registration response")
             
-        # Save token to .env file
-        with open('.env', 'w') as f:
-            f.write(f"SPACETRADERS_TOKEN={self.token}\n")
+        # Update config.json with the new agent symbol
+        try:
+            with open('config.json', 'r') as f:
+                config = json.load(f)
+            config['agent_symbol'] = symbol
+            with open('config.json', 'w') as f:
+                json.dump(config, f, indent=2)
+        except Exception as e:
+            logging.error(f"Failed to update config.json: {str(e)}")
             
-        return result
+        return response
 
     def get_agent(self) -> Dict[str, Any]:
         """Get current agent details"""
-        response = requests.get(
-            f"{self.base_url}/my/agent",
-            headers=self._get_headers()
-        )
-        response.raise_for_status()
-        return response.json()
+        return self._make_request("GET", "my/agent")
         
     def get_contracts(self) -> Dict[str, Any]:
         """Get available contracts"""
-        url = f"{self.base_url}/my/contracts"
-        print(f"\nCalling API: GET {url}", file=sys.stderr)
-        response = requests.get(
-            url,
-            headers=self._get_headers()
-        )
-        response.raise_for_status()
-        return response.json()
+        return self._make_request("GET", "my/contracts")
         
     def accept_contract(self, contract_id: str) -> Dict[str, Any]:
         """Accept a contract"""
-        response = requests.post(
-            f"{self.base_url}/my/contracts/{contract_id}/accept",
-            headers=self._get_headers()
-        )
-        response.raise_for_status()
-        return response.json()
+        return self._make_request("POST", f"my/contracts/{contract_id}/accept")
         
     def get_market(self, system: str, waypoint: str) -> Dict[str, Any]:
         """Get market data at a waypoint"""
-        response = requests.get(
-            f"{self.base_url}/systems/{system}/waypoints/{waypoint}/market",
-            headers=self._get_headers()
-        )
-        response.raise_for_status()
-        return response.json()
+        return self._make_request("GET", f"systems/{system}/waypoints/{waypoint}/market")
 
     def buy_goods(self, ship_symbol: str, symbol: str, units: int) -> Dict[str, Any]:
         """Buy goods at current market"""
-        response = requests.post(
-            f"{self.base_url}/my/ships/{ship_symbol}/purchase",
-            headers=self._get_headers(),
-            json={"symbol": symbol, "units": units}
-        )
-        response.raise_for_status()
-        return response.json()
+        return self._make_request("POST", f"my/ships/{ship_symbol}/purchase", {
+            "symbol": symbol,
+            "units": units
+        })
 
     def sell_goods(self, ship_symbol: str, symbol: str, units: int) -> Dict[str, Any]:
         """Sell goods at current market"""
-        response = requests.post(
-            f"{self.base_url}/my/ships/{ship_symbol}/sell",
-            headers=self._get_headers(),
-            json={"symbol": symbol, "units": units}
-        )
-        response.raise_for_status()
-        return response.json()
+        return self._make_request("POST", f"my/ships/{ship_symbol}/sell", {
+            "symbol": symbol,
+            "units": units
+        })
 
     def get_my_ships(self) -> Dict[str, Any]:
         """Get list of ships owned by the agent"""
-        response = requests.get(
-            f"{self.base_url}/my/ships",
-            headers=self._get_headers()
-        )
-        response.raise_for_status()
-        return response.json()
+        return self._make_request("GET", "my/ships")
 
     def dock_ship(self, ship_symbol: str) -> Dict[str, Any]:
         """Dock ship at current waypoint"""
-        response = requests.post(
-            f"{self.base_url}/my/ships/{ship_symbol}/dock",
-            headers=self._get_headers()
-        )
-        response.raise_for_status()
-        return response.json()
+        return self._make_request("POST", f"my/ships/{ship_symbol}/dock")
 
     def orbit_ship(self, ship_symbol: str) -> Dict[str, Any]:
         """Move ship into orbit"""
-        response = requests.post(
-            f"{self.base_url}/my/ships/{ship_symbol}/orbit",
-            headers=self._get_headers()
-        )
-        response.raise_for_status()
-        return response.json()
+        return self._make_request("POST", f"my/ships/{ship_symbol}/orbit")
 
     def fulfill_contract(self, contract_id: str, ship_symbol: str, trade_symbol: str, units: int) -> Dict[str, Any]:
         """Fulfill a contract delivery"""
-        response = requests.post(
-            f"{self.base_url}/my/contracts/{contract_id}/deliver",
-            headers=self._get_headers(),
-            json={
-                "shipSymbol": ship_symbol,
-                "tradeSymbol": trade_symbol,
-                "units": units
-            }
-        )
-        response.raise_for_status()
-        return response.json()
+        return self._make_request("POST", f"my/contracts/{contract_id}/deliver", {
+            "shipSymbol": ship_symbol,
+            "tradeSymbol": trade_symbol,
+            "units": units
+        })
 
-    def _retry_api_call(self, func, *args, max_attempts=3):
-        """Retry an API call with exponential backoff"""
-        last_error = None
-        self.request_count += 1
-        endpoint = func.__name__ if hasattr(func, '__name__') else 'unknown'
-        
-        # Check recent error rate for this endpoint
-        endpoint_errors = len([t for t, e in self.error_history if e == endpoint and t > time.time() - 300])
-        if endpoint_errors > 5:  # If more than 5 errors in last 5 minutes for this endpoint
-            logging.warning(f"High error rate for endpoint {endpoint}, increasing backoff")
-            time.sleep(10)  # Additional backoff for problematic endpoints
-        for attempt in range(max_attempts):
-            try:
-                logging.debug(f"API call attempt {attempt + 1}/{max_attempts}")
-                result = func(*args)
-                logging.debug("API call successful")
-                return result
-            except requests.exceptions.RequestException as e:
-                last_error = e
-                self.error_count += 1
-                self.last_error_time = time.time()
-                self.error_history.append((time.time(), endpoint))
-                # Keep only last hour of errors
-                cutoff = time.time() - 3600
-                self.error_history = [(t, e) for t, e in self.error_history if t > cutoff]
-                if attempt < max_attempts - 1:
-                    # Base exponential backoff modified by error rate
-                    base_wait = 2 ** attempt
-                    error_rate = (self.error_count / self.request_count * 100) if self.request_count > 0 else 0
-                    wait_time = base_wait * (1 + (error_rate / 100))  # Increase wait time as error rate increases
-                    logging.warning(f"API call failed, retrying in {wait_time:.1f}s: {str(e)}")
-                    time.sleep(wait_time)
-                else:
-                    logging.error(f"API call failed after {max_attempts} attempts: {str(e)}")
-                    raise last_error
+    def extract_resources(self, ship_symbol: str, survey: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Extract resources from an asteroid or other resource field"""
+        payload = {}
+        if survey:
+            payload["survey"] = survey
+        return self._make_request("POST", f"my/ships/{ship_symbol}/extract", payload)
 
-    def extract_resources(self, ship_symbol: str, survey: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Extract resources from the current location"""
-        json_data = {"survey": survey} if survey else {}
-        response = requests.post(
-            f"{self.base_url}/my/ships/{ship_symbol}/extract",
-            headers=self._get_headers(),
-            json=json_data
-        )
-        response.raise_for_status()
-        return response.json()
+    def scan_ships(self, ship_symbol: str) -> Dict[str, Any]:
+        """Scan for nearby ships"""
+        return self._make_request("POST", f"my/ships/{ship_symbol}/scan/ships")
+
+    def repair_ship(self, ship_symbol: str) -> Dict[str, Any]:
+        """Repair ship at a shipyard"""
+        return self._make_request("POST", f"my/ships/{ship_symbol}/repair")
+
+    def negotiate_contract(self, ship_symbol: str) -> Dict[str, Any]:
+        """Negotiate a new contract"""
+        return self._make_request("POST", f"my/ships/{ship_symbol}/negotiate/contract")
+
+    def jump_ship(self, ship_symbol: str, system_symbol: str) -> Dict[str, Any]:
+        """Jump ship to another system using a jump gate"""
+        return self._make_request("POST", f"my/ships/{ship_symbol}/jump", {
+            "systemSymbol": system_symbol
+        })
 
     def survey_location(self, ship_symbol: str) -> Dict[str, Any]:
         """Survey the current location for better extraction spots"""
-        response = requests.post(
-            f"{self.base_url}/my/ships/{ship_symbol}/survey",
-            headers=self._get_headers()
-        )
-        response.raise_for_status()
-        return response.json()
+        return self._make_request("POST", f"my/ships/{ship_symbol}/survey")
 
-    def get_waypoints(self, system: str) -> Dict[str, Any]:
+    def get_waypoints(self, system: str, page: int = 1, limit: int = 20) -> Dict[str, Any]:
         """Get list of waypoints in a system"""
-        response = requests.get(
-            f"{self.base_url}/systems/{system}/waypoints",
-            headers=self._get_headers()
-        )
-        response.raise_for_status()
-        return response.json()
+        return self._make_request("GET", f"systems/{system}/waypoints?page={page}&limit={limit}")
         
-    def get_systems(self) -> Dict[str, Any]:
+    def get_systems(self, page: int = 1, limit: int = 20) -> Dict[str, Any]:
         """Get list of all systems"""
-        response = requests.get(
-            f"{self.base_url}/systems",
-            headers=self._get_headers()
-        )
-        response.raise_for_status()
-        return response.json()
+        return self._make_request("GET", f"systems?page={page}&limit={limit}")
         
     def get_factions(self) -> Dict[str, Any]:
         """Get list of all factions"""
-        response = requests.get(
-            f"{self.base_url}/factions",
-            headers=self._get_headers()
-        )
-        response.raise_for_status()
-        return response.json()
+        return self._make_request("GET", "factions")
 
-    def navigate_ship(self, ship_symbol: str, waypoint: str) -> Dict[str, Any]:
-        """Navigate ship to waypoint"""
-        response = requests.post(
-            f"{self.base_url}/my/ships/{ship_symbol}/navigate",
-            headers=self._get_headers(),
-            json={"waypointSymbol": waypoint}
-        )
-        if response.status_code != 200:
-            logging.error(f"Navigation error: {response.text}")
-        response.raise_for_status()
-        return response.json()
+    def navigate_ship(self, ship_symbol: str, waypoint_symbol: str) -> Dict[str, Any]:
+        """Navigate ship to a waypoint."""
+        return self._make_request("POST", f"my/ships/{ship_symbol}/navigate", {
+            "waypointSymbol": waypoint_symbol
+        })
+
+    def transfer_cargo(self, ship_symbol: str, trade_symbol: str, units: int, receiving_ship: str) -> Dict[str, Any]:
+        """Transfer cargo between ships"""
+        return self._make_request("POST", f"my/ships/{ship_symbol}/transfer", {
+            "tradeSymbol": trade_symbol,
+            "units": units,
+            "shipSymbol": receiving_ship
+        })
+
+    def get_system_waypoints(self, system_symbol: str) -> Dict[str, Any]:
+        """Get all waypoints in a system"""
+        return self._make_request("GET", f"systems/{system_symbol}/waypoints")
+
+    def refuel_ship(self, ship_symbol: str) -> Dict[str, Any]:
+        """Refuel a ship at a station"""
+        return self._make_request("POST", f"my/ships/{ship_symbol}/refuel")
 
     def get_ship_cooldown(self, ship_symbol: str) -> Dict[str, Any]:
         """Get the ship's cooldown status"""
-        response = requests.get(
-            f"{self.base_url}/my/ships/{ship_symbol}/cooldown",
-            headers=self._get_headers()
-        )
-        response.raise_for_status()
-        return response.json()
+        return self._make_request("GET", f"my/ships/{ship_symbol}/cooldown")
 
     def get_ship(self, ship_symbol: str) -> Dict[str, Any]:
         """Get details of a specific ship"""
-        response = requests.get(
-            f"{self.base_url}/my/ships/{ship_symbol}",
-            headers=self._get_headers()
-        )
-        response.raise_for_status()
-        return response.json()
+        return self._make_request("GET", f"my/ships/{ship_symbol}")
 
     def can_ship_mine(self, ship_symbol: str) -> Dict[str, Any]:
         """
@@ -365,57 +361,22 @@ class SpaceTradersClient:
 
     def get_shipyard(self, system: str, waypoint: str) -> Dict[str, Any]:
         """Get shipyard data at a waypoint"""
-        response = requests.get(
-            f"{self.base_url}/systems/{system}/waypoints/{waypoint}/shipyard",
-            headers=self._get_headers()
-        )
-        response.raise_for_status()
-        return response.json()
+        return self._make_request("GET", f"systems/{system}/waypoints/{waypoint}/shipyard")
 
     def purchase_ship(self, ship_type: str, waypoint: str) -> Dict[str, Any]:
-        """Purchase a new ship at the specified waypoint"""
-        response = requests.post(
-            f"{self.base_url}/my/ships",
-            headers=self._get_headers(),
-            json={
-                "shipType": ship_type,
-                "waypointSymbol": waypoint
-            }
-        )
-        response.raise_for_status()
-        return response.json()
+        """Purchase a ship at a shipyard"""
+        return self._make_request("POST", f"my/ships", {
+            "shipType": ship_type,
+            "waypointSymbol": waypoint
+        })
 
     def purchase_ship_mount(self, ship_symbol: str, mount_symbol: str) -> Dict[str, Any]:
         """Purchase and install a mount on a ship"""
-        response = requests.post(
-            f"{self.base_url}/my/ships/{ship_symbol}/mounts",
-            headers=self._get_headers(),
-            json={"symbol": mount_symbol}
-        )
-        response.raise_for_status()
-        return response.json()
+        return self._make_request("POST", f"my/ships/{ship_symbol}/mounts", {"symbol": mount_symbol})
 
     def get_waypoint(self, system: str, waypoint: str) -> Dict[str, Any]:
         """Get details about a specific waypoint"""
-        response = requests.get(
-            f"{self.base_url}/systems/{system}/waypoints/{waypoint}",
-            headers=self._get_headers()
-        )
-        if response.status_code != 200:
-            logging.error(f"Waypoint error: {response.text}")
-        response.raise_for_status()
-        return response.json()
-
-    def refuel_ship(self, ship_symbol: str) -> Dict[str, Any]:
-        """Refuel ship at current waypoint"""
-        response = requests.post(
-            f"{self.base_url}/my/ships/{ship_symbol}/refuel",
-            headers=self._get_headers()
-        )
-        if response.status_code != 200:
-            logging.error(f"Refuel error: {response.text}")
-        response.raise_for_status()
-        return response.json()
+        return self._make_request("GET", f"systems/{system}/waypoints/{waypoint}")
 
     def make_request(self, method: str, endpoint: str, params: Dict[str, Any] = None, json_data: Dict[str, Any] = None) -> Dict[str, Any]:
         """
@@ -430,15 +391,34 @@ class SpaceTradersClient:
         Returns:
             Dict containing the API response
         """
-        url = f"{self.base_url}{endpoint}"
+        url = f"{self.base_url}/{endpoint}"
         logging.debug(f"Making {method} request to {url}")
         
-        response = requests.request(
-            method=method,
-            url=url,
-            headers=self._get_headers(),
-            params=params,
-            json=json_data
-        )
-        response.raise_for_status()
-        return response.json()
+        try:
+            response = requests.request(
+                method=method,
+                url=url,
+                headers=self._get_headers(),
+                params=params,
+                json=json_data
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            self._handle_error(endpoint, e)
+            raise
+
+    def get_ships(self):
+        """Get all ships owned by the agent"""
+        return self._make_request("GET", "my/ships")
+
+    def purchase_ship(self, ship_type, waypoint):
+        """Purchase a new ship"""
+        return self._make_request("POST", "my/ships", {
+            "shipType": ship_type,
+            "waypointSymbol": waypoint
+        })
+
+    def get_market(self, system_symbol, waypoint_symbol):
+        """Get market data for a waypoint"""
+        return self._make_request("GET", f"systems/{system_symbol}/waypoints/{waypoint_symbol}/market")
