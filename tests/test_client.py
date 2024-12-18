@@ -981,3 +981,117 @@ def test_jump_gate_travel():
     schema, validator = load_openapi_schema(OPENAPI_SCHEMA_PATH)
     jump_schema = schema["paths"]["/my/ships/{shipSymbol}/jump"]["post"]["responses"]["200"]["content"]["application/json"]["schema"]
     validator.validate(mock_jump)
+
+import unittest
+from unittest.mock import patch, MagicMock
+import time
+import requests
+import logging
+from src.api.client import SpaceTradersClient, CircuitState
+
+# Configure logging to be less noisy during tests
+logging.getLogger().setLevel(logging.INFO)
+
+class TestSpaceTradersClient(unittest.TestCase):
+    def setUp(self):
+        self.client = SpaceTradersClient()
+        # Mock the token to avoid actual registration
+        self.client.token = "test_token"
+        logging.info("\n=== Starting new test ===")
+        
+    def test_circuit_breaker_opens_after_errors(self):
+        """Test that circuit breaker opens after threshold errors"""
+        logging.info("[TEST] Simulating multiple failures to trigger circuit breaker")
+        endpoint = "test/endpoint"
+        
+        # Simulate multiple failures
+        for _ in range(self.client.error_threshold):
+            self.client._update_circuit_state(False, endpoint)
+            
+        self.assertEqual(self.client.circuit_state, CircuitState.OPEN)
+        
+    def test_circuit_breaker_half_open_after_timeout(self):
+        """Test that circuit breaker moves to half-open state after timeout"""
+        logging.info("[TEST] Simulating circuit breaker recovery after timeout")
+        endpoint = "test/endpoint"
+        
+        # Open the circuit
+        for _ in range(self.client.error_threshold):
+            self.client._update_circuit_state(False, endpoint)
+            
+        # Set last error time to be older than reset timeout
+        self.client.last_error_time = time.time() - (self.client.reset_timeout + 1)
+        
+        # Check circuit breaker state
+        self.assertTrue(self.client._check_circuit_breaker(endpoint))
+        self.assertEqual(self.client.circuit_state, CircuitState.HALF_OPEN)
+        
+    def test_circuit_breaker_closes_after_success(self):
+        """Test that circuit breaker closes after success threshold"""
+        logging.info("[TEST] Simulating successful requests to close circuit breaker")
+        endpoint = "test/endpoint"
+        
+        # Set to half-open state
+        self.client.circuit_state = CircuitState.HALF_OPEN
+        
+        # Simulate successful requests
+        for _ in range(self.client.success_threshold):
+            self.client._update_circuit_state(True, endpoint)
+            
+        self.assertEqual(self.client.circuit_state, CircuitState.CLOSED)
+        
+    @patch('time.time')
+    @patch('requests.get')
+    def test_adaptive_rate_limiting(self, mock_get, mock_time):
+        """Test that rate limiting adapts based on response times"""
+        logging.info("[TEST] Testing adaptive rate limiting with simulated slow responses")
+        # Set up time mock to advance by 0.1 seconds each call
+        mock_time.side_effect = [x * 0.1 for x in range(100)]
+        
+        # Mock successful response
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {}
+        mock_get.return_value = mock_response
+        
+        # Set initial rate higher for testing
+        self.client.requests_per_second = 5.0
+        self.client.min_request_interval = 1.0 / self.client.requests_per_second
+        initial_rate = self.client.requests_per_second
+        
+        # Fill response times with slow responses
+        self.client.response_times.extend([2.0] * 50)  # 50 slow responses
+        
+        # Set last adjustment time to trigger immediate adjustment
+        self.client.last_rate_adjustment = 0
+        
+        # Trigger rate adjustment
+        self.client._wait_for_rate_limit()
+        
+        # Check that rate was reduced
+        self.assertLess(self.client.requests_per_second, initial_rate)
+        
+    @patch('time.time')
+    @patch('requests.get')
+    def test_exponential_backoff(self, mock_get, mock_time):
+        """Test exponential backoff with jitter on failures"""
+        logging.info("[TEST] Testing exponential backoff with simulated failures")
+        # Set up time mock
+        current_time = 0
+        def time_side_effect():
+            nonlocal current_time
+            current_time += 0.1
+            return current_time
+        mock_time.side_effect = time_side_effect
+        
+        # Mock failed response
+        mock_get.side_effect = requests.exceptions.RequestException("[TEST] Simulated API error for testing")
+        
+        with self.assertRaises(RuntimeError):
+            self.client._make_request("GET", "test/endpoint")
+        
+        # Verify number of retries
+        self.assertEqual(mock_get.call_count, 3)  # Initial attempt + 2 retries
+
+if __name__ == '__main__':
+    unittest.main()

@@ -1,20 +1,27 @@
+# IDE and workspace files
+.windsurfrules
+*.code-workspace
+config.json
+
+# Logs
+logs/
+*.log
+
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
+.pytest_cache/
 
-# Virtual Environment
+# Environment
+.env
+.venv
+env/
 venv/
+ENV/
 
 # Application state
 agent_state.json
 
-# IDE
-.vscode/
-.idea/
-
 # Misc
 codebuff.txt
-
-# Environment variables
-.env

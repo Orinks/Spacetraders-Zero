@@ -3,17 +3,43 @@ import sys
 import time
 import logging
 import requests
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Tuple
 import json
 from dotenv import load_dotenv
 from collections import deque
+import statistics
 from datetime import datetime, timedelta
+from enum import Enum
+import random
+from functools import lru_cache
+import asyncio
+import aiohttp
+from concurrent.futures import ThreadPoolExecutor
+
+class CircuitState(Enum):
+    CLOSED = "CLOSED"  # Normal operation
+    OPEN = "OPEN"      # Not allowing requests
+    HALF_OPEN = "HALF_OPEN"  # Testing if service is healthy
+
+class CacheEntry:
+    def __init__(self, data: Dict[str, Any], etag: Optional[str] = None, last_modified: Optional[str] = None):
+        self.data = data
+        self.etag = etag
+        self.last_modified = last_modified
+        self.timestamp = time.time()
 
 class SpaceTradersClient:
     """Client for interacting with SpaceTraders API"""
     
     def __init__(self):
-        logging.basicConfig(level=logging.INFO)
+        # Configure logging with more detailed format
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s [%(levelname)s] %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        self.logger = logging.getLogger(__name__)
+        
         load_dotenv()  # Load environment variables from .env file
         self.base_url = os.getenv("SPACETRADERS_API_URL", "https://api.spacetraders.io/v2")
         self.token = os.getenv("SPACETRADERS_TOKEN")
@@ -25,21 +51,45 @@ class SpaceTradersClient:
         self.burst_limit = 10  # Maximum burst requests
         self.min_request_interval = 1.0 / self.requests_per_second
         
+        # Adaptive rate limiting
+        self.response_times = deque(maxlen=50)  # Track last 50 response times
+        self.rate_adjustment_threshold = 1.0  # Seconds, threshold for rate adjustment
+        self.last_rate_adjustment = time.time()
+        self.rate_adjustment_interval = 60  # Adjust rates every 60 seconds
+        
+        # Circuit breaker setup
+        self.circuit_state = CircuitState.CLOSED
+        self.error_threshold = 5  # Number of errors before opening circuit
+        self.reset_timeout = 60  # Seconds to wait before attempting reset
+        self.last_error_time = time.time()
+        self.error_count = 0
+        self.success_threshold = 3  # Successful requests needed to close circuit
+        self.success_count = 0
+        
+        # Cache settings
+        self.cache: Dict[str, CacheEntry] = {}
+        self.cache_ttl = 60  # Default TTL of 60 seconds
+        self.cache_enabled = True
+        
+        # Async client session
+        self.async_session = None
+        self.thread_pool = ThreadPoolExecutor(max_workers=10)
+        
         # If no token is found, try to register a new agent
         if not self.token:
-            logging.info("No token found, attempting to register new agent...")
+            self.logger.info("No token found, attempting to register new agent...")
             try:
                 # Use a short name to avoid length issues
                 agent_name = f"CODEIUM{len(os.listdir('.'))}"
                 result = self.register_new_agent(agent_name, "COSMIC")
                 if result and result.get("data", {}).get("token"):
                     self.token = result["data"]["token"]
-                    logging.info("Successfully registered new agent and saved token")
+                    self.logger.info("Successfully registered new agent and saved token")
                 else:
-                    logging.error("Failed to register new agent: No token received.")
+                    self.logger.error("Failed to register new agent: No token received.")
                     sys.exit(1)
             except Exception as e:
-                logging.error(f"Failed to register new agent: {str(e)}")
+                self.logger.error(f"Failed to register new agent: {str(e)}")
                 sys.exit(1)
                 
         self.error_count = 0
@@ -49,12 +99,28 @@ class SpaceTradersClient:
         self.last_error_reset = time.time()
             
     def _wait_for_rate_limit(self):
-        """Wait if necessary to respect rate limits"""
+        """Wait if necessary to respect rate limits with adaptive adjustment"""
         current_time = time.time()
         
         # Clean up old timestamps
         while self.request_timestamps and current_time - self.request_timestamps[0] > self.request_window:
             self.request_timestamps.popleft()
+        
+        # Adjust rate limits based on response times
+        if (current_time - self.last_rate_adjustment > self.rate_adjustment_interval or self.last_rate_adjustment == 0) and len(self.response_times) > 0:
+            avg_response_time = statistics.mean(self.response_times)
+            old_rate = self.requests_per_second
+            
+            if avg_response_time > self.rate_adjustment_threshold:
+                # More aggressive rate reduction (30%) when response times are high
+                self.requests_per_second = max(1, self.requests_per_second * 0.7)
+            elif avg_response_time < self.rate_adjustment_threshold * 0.5:  # If response times are good
+                self.requests_per_second = min(10, self.requests_per_second * 1.1)  # Gentle increase
+                
+            if old_rate != self.requests_per_second:
+                self.min_request_interval = 1.0 / self.requests_per_second
+                self.last_rate_adjustment = current_time
+                self.logger.info(f"Adjusted request rate from {old_rate:.2f} to {self.requests_per_second:.2f} req/s (avg response: {avg_response_time:.2f}s)")
         
         # If we've hit our burst limit, wait for the oldest request to expire
         if len(self.request_timestamps) >= self.burst_limit:
@@ -70,18 +136,38 @@ class SpaceTradersClient:
         
         self.request_timestamps.append(time.time())
 
-    def _get_headers(self) -> Dict[str, str]:
-        """Get headers for API requests"""
-        if not self.token:
-            logging.warning("No token available for request. Please register an agent first.")
-            raise ValueError("No token available for request. Please register an agent first.")
-        auth_token = self.token.strip()
-        if not auth_token.startswith("Bearer "):
-            auth_token = f"Bearer {auth_token}"
-        return {
-            "Authorization": auth_token,
-            "Content-Type": "application/json"
-        }
+    def _check_circuit_breaker(self, endpoint: str) -> bool:
+        """Check if circuit breaker allows the request"""
+        current_time = time.time()
+        
+        if self.circuit_state == CircuitState.OPEN:
+            if current_time - self.last_error_time > self.reset_timeout:
+                self.logger.info("Circuit breaker entering half-open state")
+                self.circuit_state = CircuitState.HALF_OPEN
+                self.success_count = 0
+            else:
+                return False
+                
+        return True
+
+    def _update_circuit_state(self, success: bool, endpoint: str):
+        """Update circuit breaker state based on request result"""
+        if success:
+            if self.circuit_state == CircuitState.HALF_OPEN:
+                self.success_count += 1
+                if self.success_count >= self.success_threshold:
+                    self.logger.info("Circuit breaker closing - service recovered")
+                    self.circuit_state = CircuitState.CLOSED
+                    self.error_count = 0
+            else:
+                self.error_count = max(0, self.error_count - 1)
+        else:
+            self.error_count += 1
+            self.last_error_time = time.time()
+            if self.error_count >= self.error_threshold:
+                if self.circuit_state != CircuitState.OPEN:
+                    self.logger.warning(f"Circuit breaker opening for endpoint pattern: {endpoint}")
+                    self.circuit_state = CircuitState.OPEN
 
     def _handle_error(self, endpoint: str, error: Exception) -> None:
         """Handle API errors and track error rate"""
@@ -99,22 +185,72 @@ class SpaceTradersClient:
             self.last_error_reset = current_time
             
         if isinstance(error, requests.exceptions.HTTPError):
-            logging.error(f"HTTP error on {endpoint}: {error}")
+            self.logger.error(f"HTTP error on {endpoint}: {error}")
         else:
-            logging.error(f"Error on {endpoint}: {error}")
+            self.logger.error(f"Error on {endpoint}: {error}")
 
-    def _make_request(self, method: str, endpoint: str, data: Optional[Dict] = None) -> Dict[str, Any]:
-        """Make a request to the SpaceTraders API with rate limiting and retries."""
+    def _get_cache_key(self, endpoint: str, params: Optional[Dict] = None) -> str:
+        """Generate a cache key from endpoint and params"""
+        if params:
+            param_str = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
+            return f"{endpoint}?{param_str}"
+        return endpoint
+
+    def _get_cached_response(self, endpoint: str, params: Optional[Dict] = None) -> Optional[Dict]:
+        """Get cached response if available and not expired"""
+        cache_key = self._get_cache_key(endpoint, params)
+        cached = self.cache.get(cache_key)
+        
+        if cached and time.time() - cached.timestamp < self.cache_ttl:
+            return None  # Let the request proceed with conditional headers
+            
+        return None
+
+    def _update_cache(self, endpoint: str, data: Dict, response: requests.Response, params: Optional[Dict] = None) -> None:
+        """Update cache with response data and validation headers"""
+        cache_key = self._get_cache_key(endpoint, params)
+        etag = response.headers.get('ETag')
+        last_modified = response.headers.get('Last-Modified')
+        
+        self.cache[cache_key] = CacheEntry(data, etag, last_modified)
+        self.logger.debug(f"Updated cache for {cache_key}")
+
+    def _make_request(self, method: str, endpoint: str, data: Optional[Dict] = None, params: Optional[Dict] = None) -> Dict[str, Any]:
+        """Make a request to the SpaceTraders API with caching and rate limiting."""
+        if not self._check_circuit_breaker(endpoint):
+            self.logger.critical(f"Circuit breaker is open for endpoint pattern: {endpoint}")
+            raise RuntimeError(f"Circuit breaker is open for endpoint pattern: {endpoint}")
+            
         url = f"{self.base_url}/{endpoint}"
         headers = {"Authorization": f"Bearer {self.token}"}
         
+        # Add conditional GET headers if available
+        if method == "GET":
+            cache_key = self._get_cache_key(endpoint, params)
+            if cache_key in self.cache:
+                cached = self.cache[cache_key]
+                if cached.etag:
+                    headers['If-None-Match'] = cached.etag
+                    self.logger.debug(f"Using ETag: {cached.etag}")
+                if cached.last_modified:
+                    headers['If-Modified-Since'] = cached.last_modified
+                    self.logger.debug(f"Using Last-Modified: {cached.last_modified}")
+        
         max_retries = 3
-        retry_delay = 2
+        base_delay = 2
         
         for attempt in range(max_retries):
             try:
+                # Log request details
+                self._log_request(method, endpoint, params, data)
+                
+                # Wait for rate limiting
+                self._wait_for_rate_limit()
+                
+                start_time = time.time()
+                
                 if method == "GET":
-                    response = requests.get(url, headers=headers, timeout=10)
+                    response = requests.get(url, headers=headers, params=params, timeout=10)
                 elif method == "POST":
                     response = requests.post(url, headers=headers, json=data, timeout=10)
                 elif method == "PATCH":
@@ -122,30 +258,66 @@ class SpaceTradersClient:
                 else:
                     raise ValueError(f"Unsupported HTTP method: {method}")
                 
+                # Record response time and log response
+                duration = time.time() - start_time
+                self._log_response(response, duration)
+                self.response_times.append(duration)
+                
                 if response.status_code == 429:  # Rate limit hit
-                    retry_after = int(response.headers.get('Retry-After', retry_delay))
-                    logging.warning(f"Rate limit hit, waiting {retry_after} seconds...")
+                    retry_after = int(response.headers.get('Retry-After', base_delay))
+                    self.logger.warning(f"Rate limit hit, waiting {retry_after} seconds...")
                     time.sleep(retry_after)
                     continue
+                elif response.status_code == 304:  # Not Modified
+                    self.logger.debug(f"Resource not modified for {endpoint}")
+                    return self.cache[self._get_cache_key(endpoint, params)].data
                 
                 response.raise_for_status()
-                return response.json()
+                response_data = response.json()
+                
+                # Update cache for GET requests
+                if method == "GET":
+                    self._update_cache(endpoint, response_data, response, params)
+                
+                self._update_circuit_state(True, endpoint)
+                return response_data
                 
             except requests.exceptions.RequestException as e:
+                duration = time.time() - start_time
+                self._log_error(endpoint, e, duration)
+                self._update_circuit_state(False, endpoint)
+                
                 if attempt < max_retries - 1:
-                    logging.warning(f"Request failed: {str(e)}")
-                    logging.warning(f"Retrying in {retry_delay} seconds...")
-                    time.sleep(retry_delay)
-                    retry_delay *= 2
+                    # Calculate exponential backoff with jitter
+                    max_delay = base_delay * (2 ** attempt)
+                    jitter = random.uniform(0, 0.1 * max_delay)  # 10% jitter
+                    delay = max_delay + jitter
+                    
+                    self.logger.warning(f"Request failed: {str(e)}")
+                    self.logger.warning(f"Retrying in {delay:.2f} seconds...")
+                    time.sleep(delay)
                 else:
-                    logging.error(f"HTTP error on {endpoint}: {str(e)}")
+                    self.logger.error(f"Maximum retries exceeded for {endpoint}")
                     raise RuntimeError(f"Failed to connect to SpaceTraders API: {str(e)}")
         
         raise RuntimeError("Maximum retries exceeded with no specific error")
 
+    def _get_headers(self) -> Dict[str, str]:
+        """Get headers for API requests"""
+        if not self.token:
+            self.logger.warning("No token available for request. Please register an agent first.")
+            raise ValueError("No token available for request. Please register an agent first.")
+        auth_token = self.token.strip()
+        if not auth_token.startswith("Bearer "):
+            auth_token = f"Bearer {auth_token}"
+        return {
+            "Authorization": auth_token,
+            "Content-Type": "application/json"
+        }
+
     def register_new_agent(self, symbol: str, faction: str = "COSMIC") -> Dict[str, Any]:
         """Register a new agent and get access token"""
-        logging.info(f"Registering new agent {symbol} with faction {faction}")
+        self.logger.info(f"Registering new agent {symbol} with faction {faction}")
         response = self._make_request("POST", "register", {
             "symbol": symbol,
             "faction": faction,
@@ -164,7 +336,7 @@ class SpaceTradersClient:
             with open('config.json', 'w') as f:
                 json.dump(config, f, indent=2)
         except Exception as e:
-            logging.error(f"Failed to update config.json: {str(e)}")
+            self.logger.error(f"Failed to update config.json: {str(e)}")
             
         return response
 
@@ -250,11 +422,11 @@ class SpaceTradersClient:
     def get_waypoints(self, system: str, page: int = 1, limit: int = 20) -> Dict[str, Any]:
         """Get list of waypoints in a system"""
         return self._make_request("GET", f"systems/{system}/waypoints?page={page}&limit={limit}")
-        
+
     def get_systems(self, page: int = 1, limit: int = 20) -> Dict[str, Any]:
         """Get list of all systems"""
         return self._make_request("GET", f"systems?page={page}&limit={limit}")
-        
+
     def get_factions(self) -> Dict[str, Any]:
         """Get list of all factions"""
         return self._make_request("GET", "factions")
@@ -356,7 +528,7 @@ class SpaceTradersClient:
             return {"can_mine": True}
             
         except Exception as e:
-            logging.error(f"Error checking mining capability: {str(e)}")
+            self.logger.error(f"Error checking mining capability: {str(e)}")
             return {"can_mine": False, "reason": f"Error checking mining capability: {str(e)}"}
 
     def get_shipyard(self, system: str, waypoint: str) -> Dict[str, Any]:
@@ -365,7 +537,7 @@ class SpaceTradersClient:
 
     def purchase_ship(self, ship_type: str, waypoint: str) -> Dict[str, Any]:
         """Purchase a ship at a shipyard"""
-        return self._make_request("POST", f"my/ships", {
+        return self._make_request("POST", "my/ships", {
             "shipType": ship_type,
             "waypointSymbol": waypoint
         })
@@ -392,7 +564,7 @@ class SpaceTradersClient:
             Dict containing the API response
         """
         url = f"{self.base_url}/{endpoint}"
-        logging.debug(f"Making {method} request to {url}")
+        self.logger.debug(f"Making {method} request to {url}")
         
         try:
             response = requests.request(
@@ -422,3 +594,146 @@ class SpaceTradersClient:
     def get_market(self, system_symbol, waypoint_symbol):
         """Get market data for a waypoint"""
         return self._make_request("GET", f"systems/{system_symbol}/waypoints/{waypoint_symbol}/market")
+
+    async def _init_async_session(self):
+        """Initialize async session if not already initialized"""
+        if self.async_session is None:
+            self.async_session = aiohttp.ClientSession(headers={"Authorization": f"Bearer {self.token}"})
+
+    async def _close_async_session(self):
+        """Close async session if it exists"""
+        if self.async_session:
+            await self.async_session.close()
+            self.async_session = None
+
+    async def _async_get(self, endpoint: str, params: Optional[Dict] = None) -> Dict[str, Any]:
+        """Make an async GET request"""
+        await self._init_async_session()
+        url = f"{self.base_url}/{endpoint}"
+        
+        try:
+            self._log_request("GET", endpoint, params)
+            async with self.async_session.get(url, params=params) as response:
+                response.raise_for_status()
+                data = await response.json()
+                self._log_response(response, time.time() - datetime.now().timestamp())
+                return data
+        except Exception as e:
+            self._log_error(endpoint, e, time.time() - datetime.now().timestamp())
+            return None
+
+    async def _batch_get(self, endpoints: List[Tuple[str, Optional[Dict]]]) -> List[Dict[str, Any]]:
+        """Batch multiple GET requests"""
+        try:
+            await self._init_async_session()
+            tasks = []
+            for endpoint, params in endpoints:
+                task = self._async_get(endpoint, params)
+                tasks.append(task)
+            
+            results = await asyncio.gather(*tasks)
+            return [r for r in results if r is not None]  # Filter out failed requests
+        finally:
+            if self.async_session:
+                await self.async_session.close()
+                self.async_session = None
+
+    def batch_get(self, endpoints: List[Tuple[str, Optional[Dict]]]) -> List[Dict[str, Any]]:
+        """Synchronous wrapper for batch GET requests"""
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(self._batch_get(endpoints))
+        finally:
+            loop.close()
+
+    def get_ships_with_info(self, ship_symbols: List[str]) -> List[Dict[str, Any]]:
+        """Get detailed information for multiple ships in parallel"""
+        endpoints = [(f"my/ships/{symbol}", None) for symbol in ship_symbols]
+        return self.batch_get(endpoints)
+
+    def get_markets_info(self, locations: List[Tuple[str, str]]) -> List[Dict[str, Any]]:
+        """Get market data for multiple locations in parallel
+        Args:
+            locations: List of (system_symbol, waypoint_symbol) tuples
+        """
+        endpoints = [(f"systems/{system}/waypoints/{waypoint}/market", None) 
+                    for system, waypoint in locations]
+        return self.batch_get(endpoints)
+
+    def get_waypoints_in_systems(self, system_symbols: List[str], limit: int = 20) -> List[Dict[str, Any]]:
+        """Get waypoints for multiple systems in parallel"""
+        endpoints = [(f"systems/{system}/waypoints", {"limit": limit}) 
+                    for system in system_symbols]
+        return self.batch_get(endpoints)
+
+    def get_shipyards_info(self, locations: List[Tuple[str, str]]) -> List[Dict[str, Any]]:
+        """Get shipyard data for multiple locations in parallel
+        Args:
+            locations: List of (system_symbol, waypoint_symbol) tuples
+        """
+        endpoints = [(f"systems/{system}/waypoints/{waypoint}/shipyard", None) 
+                    for system, waypoint in locations]
+        return self.batch_get(endpoints)
+
+    @lru_cache(maxsize=1000)
+    def get_system_info(self, system_symbol: str) -> Dict[str, Any]:
+        """Get system information with caching"""
+        return self._make_request("GET", f"systems/{system_symbol}")
+
+    @lru_cache(maxsize=1000)
+    def get_waypoint_info(self, system_symbol: str, waypoint_symbol: str) -> Dict[str, Any]:
+        """Get waypoint information with caching"""
+        return self._make_request("GET", f"systems/{system_symbol}/waypoints/{waypoint_symbol}")
+
+    def clear_caches(self):
+        """Clear all caches"""
+        self.cache.clear()
+        self.get_system_info.cache_clear()
+        self.get_waypoint_info.cache_clear()
+
+    def _log_request(self, method: str, endpoint: str, params: Optional[Dict] = None, data: Optional[Dict] = None):
+        """Log request details at DEBUG level"""
+        self.logger.debug(
+            f"API Request: {method} {endpoint}\n"
+            f"Params: {params}\n"
+            f"Data: {data}\n"
+            f"Timestamp: {datetime.now().isoformat()}"
+        )
+
+    def _log_response(self, response: requests.Response, duration: float):
+        """Log response details at appropriate level based on status code"""
+        status = response.status_code
+        level = logging.DEBUG if 200 <= status < 300 else logging.WARNING
+        
+        log_msg = (
+            f"API Response: {status} ({response.reason})\n"
+            f"Duration: {duration:.2f}s\n"
+            f"Timestamp: {datetime.now().isoformat()}\n"
+            f"Headers: {dict(response.headers)}"
+        )
+        
+        # Add response body for non-200 responses
+        if status >= 300:
+            try:
+                body = response.json()
+            except:
+                body = response.text[:1000] + "..." if len(response.text) > 1000 else response.text
+            log_msg += f"\nResponse Body: {body}"
+            
+        self.logger.log(level, log_msg)
+
+    def _log_error(self, endpoint: str, error: Exception, duration: float):
+        """Log detailed error information"""
+        self.logger.error(
+            f"API Error on {endpoint}\n"
+            f"Error Type: {type(error).__name__}\n"
+            f"Error Message: {str(error)}\n"
+            f"Duration: {duration:.2f}s\n"
+            f"Timestamp: {datetime.now().isoformat()}"
+        )
+        if isinstance(error, requests.exceptions.RequestException) and error.response is not None:
+            try:
+                body = error.response.json()
+            except:
+                body = error.response.text[:1000] + "..." if len(error.response.text) > 1000 else error.response.text
+            self.logger.error(f"Response Body: {body}")
