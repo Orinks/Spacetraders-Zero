@@ -20,10 +20,8 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y \
-          python3-wxgtk4.0 \
           python3-dev \
-          python3-pip \
-          xvfb
+          python3-pip
     
     - name: Install Python dependencies
       run: |
@@ -31,12 +29,9 @@ jobs:
         pip install -r requirements.txt
         pip install pytest pytest-mock mypy types-requests bandit safety
     
-    - name: Install xvfb
-      run: sudo apt-get install -y xvfb
-
-    - name: Run tests with xvfb
+    - name: Run tests
       run: |
-        xvfb-run -a python -m pytest tests/ -v
+        python -m pytest tests/ -v
     
     - name: Run type checking
       run: |
