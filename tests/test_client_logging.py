@@ -130,8 +130,8 @@ class TestSpaceTradersClientLogging(unittest.TestCase):
         log_output = self.log_output.getvalue()
         
         # Check cache logging with the correct format
-        self.assertIn("[DEBUG] Using ETag: test-etag", log_output)
-        self.assertIn("[DEBUG] Resource not modified for test/endpoint", log_output)
+        # We now only expect the cache hit message since we return cached data directly
+        self.assertIn("[DEBUG] Cache hit for test/endpoint", log_output)
         
     def test_circuit_breaker_logging(self):
         """Test that circuit breaker state changes are logged properly"""

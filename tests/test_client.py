@@ -16,6 +16,11 @@ def load_openapi_schema(path):
 
 @pytest.fixture
 def client():
+    # Clean up any existing config files
+    if os.path.exists('config.json'):
+        os.remove('config.json')
+    if os.path.exists('.env'):
+        os.remove('.env')
     return SpaceTradersClient()
 
 @responses.activate
