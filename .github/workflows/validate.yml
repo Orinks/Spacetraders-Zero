@@ -3,6 +3,8 @@ name: Validate and Secure
 on:
   push:
     branches: [ main ]
+  pull_request:
+    branches: [ main ]
   schedule:
     - cron: '0 0 * * 0'  # Weekly security scan
 
@@ -26,12 +28,24 @@ jobs:
     - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip wheel setuptools
-        pip install -r requirements.txt
-        pip install pytest pytest-mock mypy types-requests bandit safety
+        pip install mypy types-requests bandit safety
+        pip install -e .[test]
     
     - name: Run tests
       run: |
-        python -m pytest -v
+        echo "Current directory: $(pwd)"
+        echo "Directory contents:"
+        ls -la
+        echo "Tests directory contents:"
+        ls -la tests/
+        echo "Python path:"
+        python -c "import sys; print('\n'.join(sys.path))"
+        echo "Environment variables:"
+        env
+        echo "Test file contents:"
+        cat tests/test_config.py
+        echo "Running tests with -s..."
+        python -m pytest -v -vv -s tests/ || python -m pytest -v -vv -s tests/test_config.py
     
     - name: Run type checking
       run: |

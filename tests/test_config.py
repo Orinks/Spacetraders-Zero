@@ -6,14 +6,15 @@ from src.config import Settings
 
 def test_default_settings():
     """Test that default settings are loaded correctly"""
-    # Clean up any existing config files
+    # Clean up any existing config files and environment
     if os.path.exists('config.json'):
         os.remove('config.json')
     if os.path.exists('.env'):
         os.remove('.env')
-    settings = Settings(_env_file=None)  # Disable .env loading
-    assert settings.api_url == 'https://api.spacetraders.io/v2'
-    assert settings.spacetraders_token is None
+    with patch.dict(os.environ, {}, clear=True):  # Clear all environment variables
+        settings = Settings(_env_file=None)  # Disable .env loading
+        assert settings.api_url == 'https://api.spacetraders.io/v2'
+        assert settings.spacetraders_token is None
 
 def test_custom_settings():
     """Test that environment variables override defaults"""
@@ -27,13 +28,13 @@ def test_custom_settings():
 
 def test_validate_config(caplog):
     """Test that configuration validation works and logs correctly"""
-    # Clean up any existing config files
+    # Clean up any existing config files and environment
     if os.path.exists('config.json'):
         os.remove('config.json')
     if os.path.exists('.env'):
         os.remove('.env')
         
-    with caplog.at_level(logging.INFO):
+    with patch.dict(os.environ, {}, clear=True), caplog.at_level(logging.INFO):  # Clear all environment variables
         settings = Settings(_env_file=None)  # Disable .env loading
         settings.validate_config()
         
