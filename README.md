@@ -1,6 +1,6 @@
 # SpaceTraders Zero
 
-An accessible zero-player game powered by SpaceTraders.io API with WXPython UI.
+An accessible zero-player game powered by [SpaceTraders.io](https://spacetraders.io) API with an accessible [wxPython](https://wxpython.org/) graphical interface.
 
 ## Features
 
@@ -25,8 +25,8 @@ python -m venv venv
 pip install -r requirements.txt
 ```
 
-4. (Optional) Create a .env file with your SpaceTraders API key:
-```
+4. (Optional) Create a `.env` file with your SpaceTraders API key:
+```env
 SPACETRADERS_TOKEN=your_token_here
 ```
 Note: If you don't have a token yet, you can register a new agent through the UI which will automatically save your token.
