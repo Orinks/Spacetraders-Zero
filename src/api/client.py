@@ -5,7 +5,7 @@ import logging
 import requests
 from typing import Dict, Any, Optional, List, Tuple
 import json
-from config import settings
+from src.config import settings
 from collections import deque
 import statistics
 from datetime import datetime, timedelta
