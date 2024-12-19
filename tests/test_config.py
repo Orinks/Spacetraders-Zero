@@ -44,3 +44,33 @@ def test_validate_config_with_token(caplog):
             # Check token configured message
             assert any('SPACETRADERS_TOKEN is configured' in record.message 
                       for record in caplog.records)
+
+def test_update_token(tmp_path, caplog):
+    """Test token update functionality"""
+    from unittest.mock import mock_open as mock_open_func
+    
+    mock_file_content = 'SPACETRADERS_API_URL=https://api.example.com\n'
+    m = mock_open_func(read_data=mock_file_content)
+    
+    with patch('src.config.os.path.exists', return_value=True), \
+         patch('builtins.open', m), \
+         caplog.at_level(logging.INFO):
+        
+        # Test updating token
+        settings = Settings()
+        settings.update_token('new-token')
+        
+        # Verify token was updated in memory
+        assert settings.spacetraders_token == 'new-token'
+        
+        # Verify .env file was written to
+        m.assert_called_with('.env', 'w')
+        handle = m()
+        
+        # Get the written content
+        written_content = ''.join([call.args[0] for call in handle.write.call_args_list])
+        assert 'SPACETRADERS_TOKEN=new-token\n' in written_content
+        
+        # Verify logging
+        assert any('Token updated and saved to .env file' in record.message 
+                  for record in caplog.records)

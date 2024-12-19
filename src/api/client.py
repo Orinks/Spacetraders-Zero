@@ -74,22 +74,9 @@ class SpaceTradersClient:
         self.async_session = None
         self.thread_pool = ThreadPoolExecutor(max_workers=10)
         
-        # If no token is found, try to register a new agent
+        # Don't auto-register on init, let the UI handle it
         if not self.token:
-            self.logger.info("No token found, attempting to register new agent...")
-            try:
-                # Use a short name to avoid length issues
-                agent_name = f"CODEIUM{len(os.listdir('.'))}"
-                result = self.register_new_agent(agent_name, "COSMIC")
-                if result and result.get("data", {}).get("token"):
-                    self.token = result["data"]["token"]
-                    self.logger.info("Successfully registered new agent and saved token")
-                else:
-                    self.logger.error("Failed to register new agent: No token received.")
-                    sys.exit(1)
-            except Exception as e:
-                self.logger.error(f"Failed to register new agent: {str(e)}")
-                sys.exit(1)
+            self.logger.info("No token found. Please register a new agent through the UI.")
                 
         self.error_count = 0
         self.request_count = 0
@@ -214,14 +201,19 @@ class SpaceTradersClient:
         self.cache[cache_key] = CacheEntry(data, etag, last_modified)
         self.logger.debug(f"Updated cache for {cache_key}")
 
-    def _make_request(self, method: str, endpoint: str, data: Optional[Dict] = None, params: Optional[Dict] = None) -> Dict[str, Any]:
+    def _make_request(self, method: str, endpoint: str, data: Optional[Dict] = None, params: Optional[Dict] = None, requires_auth: bool = True) -> Dict[str, Any]:
         """Make a request to the SpaceTraders API with caching and rate limiting."""
         if not self._check_circuit_breaker(endpoint):
             self.logger.critical(f"Circuit breaker is open for endpoint pattern: {endpoint}")
             raise RuntimeError(f"Circuit breaker is open for endpoint pattern: {endpoint}")
             
         url = f"{self.base_url}/{endpoint}"
-        headers = {"Authorization": f"Bearer {self.token}"}
+        headers = {"Content-Type": "application/json"}
+        
+        if requires_auth:
+            if not self.token:
+                raise ValueError("No token available for request. Please register an agent first.")
+            headers["Authorization"] = f"Bearer {self.token}"
         
         # Add conditional GET headers if available
         if method == "GET":
@@ -317,27 +309,35 @@ class SpaceTradersClient:
     def register_new_agent(self, symbol: str, faction: str = "COSMIC") -> Dict[str, Any]:
         """Register a new agent and get access token"""
         self.logger.info(f"Registering new agent {symbol} with faction {faction}")
-        response = self._make_request("POST", "register", {
+        
+        # Registration doesn't need authentication
+        url = f"{self.base_url}/register"
+        data = {
             "symbol": symbol,
             "faction": faction,
-            "email": "codeium@example.com"
-        })
-        # Extract token from data field and store it
-        self.token = response.get("data", {}).get("token")
-        if not self.token:
-            raise ValueError("No token received in registration response")
-            
-        # Update config.json with the new agent symbol
+            "email": "openhands@all-hands.dev"
+        }
+        
         try:
-            with open('config.json', 'r') as f:
-                config = json.load(f)
-            config['agent_symbol'] = symbol
-            with open('config.json', 'w') as f:
-                json.dump(config, f, indent=2)
-        except Exception as e:
-            self.logger.error(f"Failed to update config.json: {str(e)}")
+            response = requests.post(url, json=data, timeout=10)
+            response.raise_for_status()
+            response_data = response.json()
             
-        return response
+            # Extract and store token
+            token = response_data.get("data", {}).get("token")
+            if not token:
+                raise ValueError("No token received in registration response")
+            
+            # Update token in settings (which also updates .env file)
+            settings.update_token(token)
+            self.token = token
+            self.logger.info("Successfully registered new agent and saved token")
+            
+            return response_data
+            
+        except Exception as e:
+            self.logger.error(f"Failed to register new agent: {str(e)}")
+            raise
 
     def get_agent(self) -> Dict[str, Any]:
         """Get current agent details"""
