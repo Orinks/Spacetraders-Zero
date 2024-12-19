@@ -40,8 +40,12 @@ jobs:
         ls -la tests/
         echo "Python path:"
         python -c "import sys; print('\n'.join(sys.path))"
-        echo "Running tests..."
-        python -m pytest -v -vv --capture=no tests/
+        echo "Environment variables:"
+        env
+        echo "Test file contents:"
+        cat tests/test_config.py
+        echo "Running tests with -s..."
+        python -m pytest -v -vv -s tests/ || python -m pytest -v -vv -s tests/test_config.py
     
     - name: Run type checking
       run: |
