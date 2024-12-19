@@ -33,6 +33,14 @@ jobs:
     
     - name: Run tests
       run: |
+        echo "Current directory: $(pwd)"
+        echo "Directory contents:"
+        ls -la
+        echo "Tests directory contents:"
+        ls -la tests/
+        echo "Python path:"
+        python -c "import sys; print('\n'.join(sys.path))"
+        echo "Running tests..."
         python -m pytest -v -vv --capture=no tests/
     
     - name: Run type checking
