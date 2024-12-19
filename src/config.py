@@ -1,8 +1,9 @@
 import os
+from unittest.mock import patch
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 import logging
-from typing import Optional
+from typing import Optional, Any
 
 logger = logging.getLogger(__name__)
 
@@ -11,10 +12,38 @@ class Settings(BaseSettings):
     
     model_config = {
         'env_prefix': '',
-        'env_file': '.env',
-        'env_file_encoding': 'utf-8',
-        'extra': 'ignore'
+        'extra': 'ignore',
+        'env_nested_delimiter': '__'
     }
+
+    def model_post_init(self, _: Any) -> None:
+        """Handle environment file configuration after initialization."""
+        env_file = getattr(self, '_env_file', '.env')
+        if env_file:
+            from dotenv import load_dotenv
+            load_dotenv(env_file)
+    
+    @classmethod
+    def get_test_settings(cls):
+        """Get settings instance with clean environment for testing."""
+        with patch.dict(os.environ, {}, clear=True):
+            # Create settings with test-specific config
+            return cls(
+                _env_file=None,  # Disable .env file loading
+                spacetraders_token=None,
+                api_url='https://api.spacetraders.io/v2'
+            )
+    
+    def __init__(self, **kwargs):
+        if kwargs.pop('_clear_env', False):
+            # Use class method for clean environment
+            settings = self.get_test_settings()
+            kwargs = {
+                'spacetraders_token': settings.spacetraders_token,
+                'api_url': settings.api_url,
+                **kwargs
+            }
+        super().__init__(**kwargs)
     
     # SpaceTraders API configuration
     spacetraders_token: Optional[str] = Field(
@@ -68,14 +97,15 @@ class Settings(BaseSettings):
         logger.info("Validating configuration...")
         
         if not self.spacetraders_token:
-            logger.warning(
-                "SPACETRADERS_TOKEN not set. "
-                "You will need to register a new agent through the UI."
-            )
+            logger.warning("SPACETRADERS_TOKEN not set")
         else:
             logger.info("SPACETRADERS_TOKEN is configured")
         
         logger.info(f"Using API URL: {self.api_url}")
 
 # Create a global settings instance
-settings = Settings()
+def get_settings():
+    """Get settings instance, allowing for test overrides."""
+    return Settings()
+
+settings = get_settings()
