@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spacetraders-zero"
+version = "0.1.0"
+description = "Progress quest...in spaaaaace!"
+requires-python = ">=3.10"
+dependencies = [
+    "requests==2.31.0",
+    "python-dotenv==1.0.0",
+    "jsonschema==4.20.0",
+    "pydantic==2.9.2",
+    "pydantic-settings==2.2.1",
+]
