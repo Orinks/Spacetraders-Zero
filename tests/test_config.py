@@ -13,8 +13,8 @@ def test_default_settings():
         os.remove('.env')
     with patch.dict(os.environ, {}, clear=True):  # Clear all environment variables
         settings = Settings(_env_file=None)  # Disable .env loading
-    assert settings.api_url == 'https://api.spacetraders.io/v2'
-    assert settings.spacetraders_token is None
+        assert settings.api_url == 'https://api.spacetraders.io/v2'
+        assert settings.spacetraders_token is None
 
 def test_custom_settings():
     """Test that environment variables override defaults"""
