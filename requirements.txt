@@ -1,4 +1,6 @@
 wxPython==4.2.1
-        requests==2.31.0
+requests==2.31.0
 python-dotenv==1.0.0
 jsonschema==4.20.0
+pydantic==2.9.2
+pydantic-settings==2.2.1

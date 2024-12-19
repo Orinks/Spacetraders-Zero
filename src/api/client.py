@@ -5,7 +5,7 @@ import logging
 import requests
 from typing import Dict, Any, Optional, List, Tuple
 import json
-from dotenv import load_dotenv
+from config import settings
 from collections import deque
 import statistics
 from datetime import datetime, timedelta
@@ -40,9 +40,8 @@ class SpaceTradersClient:
         )
         self.logger = logging.getLogger(__name__)
         
-        load_dotenv()  # Load environment variables from .env file
-        self.base_url = os.getenv("SPACETRADERS_API_URL", "https://api.spacetraders.io/v2")
-        self.token = os.getenv("SPACETRADERS_TOKEN")
+        self.base_url = settings.api_url
+        self.token = settings.spacetraders_token
         
         # Rate limiting setup
         self.requests_per_second = 2  # Default to 2 requests per second
