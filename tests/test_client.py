@@ -1,6 +1,5 @@
 import pytest
 from src.api.client import SpaceTradersClient
-import os
 import responses
 import json
 from jsonschema import validate, validators
