@@ -7,9 +7,42 @@ from api.client import SpaceTradersClient
 import time
 from datetime import datetime, timezone
 
+import responses
+
+@responses.activate
 def test_selling():
     client = SpaceTradersClient()
+    client.token = "test-token"  # Set test token
     ship_symbol = "CDM2766-1"
+    
+    # Mock initial ship response
+    mock_ship = {
+        "data": {
+            "symbol": ship_symbol,
+            "nav": {
+                "status": "DOCKED",
+                "waypointSymbol": "X1-TEST-STATION",
+                "systemSymbol": "X1-TEST",
+                "flightMode": "CRUISE"
+            },
+            "cargo": {
+                "capacity": 100,
+                "units": 10,
+                "inventory": [
+                    {
+                        "symbol": "IRON_ORE",
+                        "units": 10
+                    }
+                ]
+            }
+        }
+    }
+    responses.add(
+        responses.GET,
+        f"https://api.spacetraders.io/v2/my/ships/{ship_symbol}",
+        json=mock_ship,
+        status=200
+    )
     
     def print_ship_status(ship_data):
         print("\nShip Status:")
@@ -49,6 +82,50 @@ def test_selling():
         # Try to sell at current location first
         current_waypoint = ship['nav']['waypointSymbol']
         try:
+            # Mock waypoint response
+            mock_waypoint = {
+                "data": {
+                    "symbol": current_waypoint,
+                    "type": "ORBITAL_STATION",
+                    "traits": [
+                        {
+                            "symbol": "MARKETPLACE",
+                            "name": "Marketplace",
+                            "description": "A trading hub"
+                        }
+                    ]
+                }
+            }
+            responses.add(
+                responses.GET,
+                f"https://api.spacetraders.io/v2/systems/{ship['nav']['systemSymbol']}/waypoints/{current_waypoint}",
+                json=mock_waypoint,
+                status=200
+            )
+
+            # Mock market response
+            mock_market = {
+                "data": {
+                    "symbol": current_waypoint,
+                    "tradeGoods": [
+                        {
+                            "symbol": "IRON_ORE",
+                            "type": "EXPORT",
+                            "tradeVolume": 100,
+                            "supply": "ABUNDANT",
+                            "purchasePrice": 100,
+                            "sellPrice": 50
+                        }
+                    ]
+                }
+            }
+            responses.add(
+                responses.GET,
+                f"https://api.spacetraders.io/v2/systems/{ship['nav']['systemSymbol']}/waypoints/{current_waypoint}/market",
+                json=mock_market,
+                status=200
+            )
+
             print(f"\nChecking if current location has a marketplace...")
             waypoint_data = client.get_waypoint(ship['nav']['systemSymbol'], current_waypoint)
             if any(trait['symbol'] == 'MARKETPLACE' for trait in waypoint_data.get('data', {}).get('traits', [])):
@@ -100,6 +177,24 @@ def test_selling():
             print_ship_status(ship)
         
         # Dock at the market
+        # Mock dock response
+        mock_dock = {
+            "data": {
+                "nav": {
+                    "status": "DOCKED",
+                    "waypointSymbol": current_waypoint,
+                    "systemSymbol": "X1-TEST",
+                    "flightMode": "CRUISE"
+                }
+            }
+        }
+        responses.add(
+            responses.POST,
+            f"https://api.spacetraders.io/v2/my/ships/{ship_symbol}/dock",
+            json=mock_dock,
+            status=200
+        )
+
         print("\nDocking at market...")
         client.dock_ship(ship_symbol)
         time.sleep(1)
@@ -112,6 +207,34 @@ def test_selling():
         
         # Sell each cargo item
         ship = get_ship_safely()
+        
+        # Mock sell response
+        mock_sell = {
+            "data": {
+                "transaction": {
+                    "waypointSymbol": current_waypoint,
+                    "shipSymbol": ship_symbol,
+                    "tradeSymbol": "IRON_ORE",
+                    "type": "SELL",
+                    "units": 10,
+                    "pricePerUnit": 50,
+                    "totalPrice": 500,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                },
+                "cargo": {
+                    "capacity": 100,
+                    "units": 0,
+                    "inventory": []
+                }
+            }
+        }
+        responses.add(
+            responses.POST,
+            f"https://api.spacetraders.io/v2/my/ships/{ship_symbol}/sell",
+            json=mock_sell,
+            status=201
+        )
+        
         for item in ship['cargo']['inventory']:
             try:
                 print(f"\nSelling {item['units']} units of {item['symbol']}...")

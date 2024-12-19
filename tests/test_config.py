@@ -6,7 +6,12 @@ from src.config import Settings
 
 def test_default_settings():
     """Test that default settings are loaded correctly"""
-    settings = Settings()
+    # Clean up any existing config files
+    if os.path.exists('config.json'):
+        os.remove('config.json')
+    if os.path.exists('.env'):
+        os.remove('.env')
+    settings = Settings(_env_file=None)  # Disable .env loading
     assert settings.api_url == 'https://api.spacetraders.io/v2'
     assert settings.spacetraders_token is None
 
@@ -22,8 +27,14 @@ def test_custom_settings():
 
 def test_validate_config(caplog):
     """Test that configuration validation works and logs correctly"""
+    # Clean up any existing config files
+    if os.path.exists('config.json'):
+        os.remove('config.json')
+    if os.path.exists('.env'):
+        os.remove('.env')
+        
     with caplog.at_level(logging.INFO):
-        settings = Settings()
+        settings = Settings(_env_file=None)  # Disable .env loading
         settings.validate_config()
         
         # Check warning about missing token
@@ -47,10 +58,21 @@ def test_validate_config_with_token(caplog):
 
 def test_update_token(tmp_path, caplog):
     """Test token update functionality"""
-    from unittest.mock import mock_open as mock_open_func
+    from unittest.mock import mock_open as mock_open_func, call, Mock
     
-    mock_file_content = 'SPACETRADERS_API_URL=https://api.example.com\n'
-    m = mock_open_func(read_data=mock_file_content)
+    mock_env_content = 'SPACETRADERS_API_URL=https://api.example.com\n'
+    mock_config_content = '{"agent_symbol": "OLD_AGENT"}'
+    
+    # Create a mock file that behaves like a real file
+    mock_file = Mock()
+    mock_file.read.side_effect = [mock_env_content, mock_config_content]
+    mock_file.readlines.return_value = [mock_env_content]
+    mock_file.write = Mock()
+    mock_file.__enter__ = Mock(return_value=mock_file)
+    mock_file.__exit__ = Mock()
+    
+    m = mock_open_func()
+    m.return_value = mock_file
     
     with patch('src.config.os.path.exists', return_value=True), \
          patch('builtins.open', m), \
@@ -63,14 +85,20 @@ def test_update_token(tmp_path, caplog):
         # Verify token was updated in memory
         assert settings.spacetraders_token == 'new-token'
         
-        # Verify .env file was written to
-        m.assert_called_with('.env', 'w')
-        handle = m()
+        # Verify all file operations
+        expected_calls = [
+            call('.env', 'r'),           # First read .env
+            call('.env', 'w'),           # Write to .env
+            call('config.json', 'r'),    # Then read config.json
+            call('config.json', 'w')     # Write to config.json
+        ]
+        assert m.call_args_list == expected_calls
         
-        # Get the written content
-        written_content = ''.join([call.args[0] for call in handle.write.call_args_list])
-        assert 'SPACETRADERS_TOKEN=new-token\n' in written_content
+        # Get the written content for .env
+        env_handle = m.return_value
+        env_written = ''.join([call.args[0] for call in env_handle.write.call_args_list])
+        assert 'SPACETRADERS_TOKEN=new-token\n' in env_written
         
         # Verify logging
-        assert any('Token updated and saved to .env file' in record.message 
+        assert any('Token updated and saved to .env and config.json files' in record.message 
                   for record in caplog.records)

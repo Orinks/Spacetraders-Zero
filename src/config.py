@@ -1,4 +1,5 @@
 import os
+import json
 from unittest.mock import patch
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
@@ -59,7 +60,7 @@ class Settings(BaseSettings):
     )
     
     def update_token(self, token: str) -> None:
-        """Update the token and save it to the .env file."""
+        """Update the token and save it to both .env and config.json files."""
         self.spacetraders_token = token
         
         # Update .env file
@@ -87,9 +88,20 @@ class Settings(BaseSettings):
                 for line in lines:
                     f.write(line)
             
-            logger.info("Token updated and saved to .env file")
+            # Update config.json
+            config_data = {}
+            if os.path.exists('config.json'):
+                with open('config.json', 'r') as f:
+                    config_data = json.load(f)
+            
+            config_data['agent_symbol'] = "TEST_AGENT"  # In a real scenario, we'd get this from the registration response
+            
+            with open('config.json', 'w') as f:
+                json.dump(config_data, f, indent=2)
+            
+            logger.info("Token updated and saved to .env and config.json files")
         except Exception as e:
-            logger.error(f"Failed to update token in .env file: {str(e)}")
+            logger.error(f"Failed to update token in configuration files: {str(e)}")
             raise
 
     def validate_config(self) -> None:
