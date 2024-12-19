@@ -33,7 +33,7 @@ jobs:
     
     - name: Run tests
       run: |
-        python -m pytest -v tests/
+        python -m pytest -v -vv --capture=no tests/
     
     - name: Run type checking
       run: |
