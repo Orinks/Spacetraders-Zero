@@ -31,7 +31,7 @@ jobs:
     
     - name: Run tests
       run: |
-        python -m pytest tests/ -v
+        python -m pytest -v
     
     - name: Run type checking
       run: |
