@@ -36,31 +36,57 @@ class AutomatedTrader:
         self.load_state()
         logging.info("Automated trader initialized")
         
+    def _get_current_state(self) -> dict:
+        """Get the current state as a dictionary."""
+        return {
+            'trade_history': self.trade_history[-100:],  # Keep last 100 trades
+            'known_markets': self.known_markets,
+            'visited_waypoints': list(self.visited_waypoints),
+            'market_trends': self.market_trends,
+            'total_profits': self.total_profits,
+            'trades_completed': self.trades_completed,
+            'failed_trades': self.failed_trades,
+            'mining_attempts': self.mining_attempts,
+            'mining_successes': self.mining_successes,
+            'cycle_count': self.cycle_count,
+            'last_update': time.time()
+        }
+
     def save_state(self):
-        """Save agent state to disk"""
+        """Save agent state to database"""
         try:
-            state = {
-                'trade_history': self.trade_history[-100:],  # Keep last 100 trades
-                'known_markets': self.known_markets,
-                'visited_waypoints': list(self.visited_waypoints)
-            }
-            with open('agent_state.json', 'w') as f:
-                json.dump(state, f)
+            if not hasattr(self, 'state_manager'):
+                from persistence import StateManager
+                self.state_manager = StateManager()
+            
+            state = self._get_current_state()
+            self.state_manager.save_state(state)
+            logging.debug("State saved successfully")
         except Exception as e:
-            print(f"Failed to save state: {e}")
+            logging.error(f"Failed to save state: {e}")
             
     def load_state(self):
-        """Load agent state from disk"""
+        """Load agent state from database"""
         try:
-            with open('agent_state.json', 'r') as f:
-                state = json.load(f)
+            if not hasattr(self, 'state_manager'):
+                from persistence import StateManager
+                self.state_manager = StateManager()
+            
+            state = self.state_manager.get_latest_state()
+            if state:
                 self.trade_history = state.get('trade_history', [])
                 self.known_markets = state.get('known_markets', {})
                 self.visited_waypoints = set(state.get('visited_waypoints', []))
-        except FileNotFoundError:
-            pass  # No state file yet
+                self.market_trends = state.get('market_trends', {})
+                self.total_profits = state.get('total_profits', 0)
+                self.trades_completed = state.get('trades_completed', 0)
+                self.failed_trades = state.get('failed_trades', 0)
+                self.mining_attempts = state.get('mining_attempts', 0)
+                self.mining_successes = state.get('mining_successes', 0)
+                self.cycle_count = state.get('cycle_count', 0)
+                logging.info("State loaded successfully")
         except Exception as e:
-            print(f"Failed to load state: {e}")
+            logging.error(f"Failed to load state: {e}")
         
     def start(self):
         """Start the automated trading"""
@@ -94,8 +120,13 @@ class AutomatedTrader:
             self.thread.join(timeout=5.0)  # Give more time for clean shutdown
             if self.thread.is_alive():
                 logging.warning("Agent thread did not stop cleanly")
-                
-        self.save_state()  # Save state on shutdown
+        
+        # Final state save and cleanup
+        self.save_state()
+        if hasattr(self, 'state_manager'):
+            self.state_manager.stop()  # Stop periodic saves
+            self.state_manager.cleanup_old_states()  # Clean up old states
+        
         logging.info("Agent stopped")
         
     def _retry_api_call(self, func, *args, max_attempts=3):
@@ -294,6 +325,11 @@ class AutomatedTrader:
             return {"status": "paused_high_errors"}
 
         logging.debug("Starting agent cycle")
+        self.cycle_count += 1
+        
+        # Save state every 10 cycles
+        if self.cycle_count % 10 == 0:
+            self.save_state()
 
         try:
             # Get current status once at start of cycle
