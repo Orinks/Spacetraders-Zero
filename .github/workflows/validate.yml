@@ -41,6 +41,12 @@ jobs:
           libgtk-3-dev \
           pkg-config
     
+    - name: Install test dependencies
+      shell: bash
+      run: |
+        # Install test dependencies first
+        pip install pytest pytest-mock mypy types-requests bandit safety==2.3.5 jsonschema responses
+    
     - name: Compile requirements (Linux)
       if: runner.os == 'Linux'
       shell: bash
@@ -48,7 +54,7 @@ jobs:
         # Create Linux-specific requirements without wxPython
         grep -v "wxPython" requirements.in > requirements.linux.in
         # Compile requirements separately
-        pip-compile requirements.linux.in --output-file=requirements.linux.txt
+        pip-compile requirements.linux.in --output-file=requirements.linux.txt --no-emit-index-url
         pip-compile dev-requirements.in --output-file=dev-requirements.txt --no-emit-index-url
     
     - name: Compile requirements (Windows)
@@ -63,14 +69,14 @@ jobs:
       if: runner.os == 'Linux'
       shell: bash
       run: |
-        pip install -r requirements.linux.txt -r dev-requirements.txt
+        pip install -r requirements.linux.txt
         pip install -e .
     
     - name: Install Python dependencies (Windows)
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        pip install -r requirements.txt -r dev-requirements.txt
+        pip install -r requirements.txt
         pip install -e .
     
     - name: Run config tests
