@@ -3,7 +3,7 @@ import sys
 import time
 import logging
 import requests
-from typing import Dict, Any, List, Optional, Tuple, Callable, Set, cast, TypedDict
+from typing import Dict, Any, List, Optional, Tuple, Callable, Set, cast, TypedDict, Literal
 from threading import Thread
 
 # Add src directory to Python path
@@ -18,17 +18,44 @@ class ShipMount(TypedDict):
     symbol: str
     name: str
     description: str
+    strength: Optional[int]
+    deposits: Optional[List[str]]
+    requirements: Dict[str, Any]
 
 class Contract(TypedDict):
     id: str
+    factionSymbol: str
     type: str
+    terms: Dict[str, Any]
     accepted: bool
     fulfilled: bool
+    expiration: str
+    deadlineToAccept: str
+
+class ShipRegistration(TypedDict):
+    name: str
+    factionSymbol: str
+    role: str
+
+class ShipNav(TypedDict):
+    systemSymbol: str
+    waypointSymbol: str
+    route: Dict[str, Any]
+    status: Literal["IN_TRANSIT", "IN_ORBIT", "DOCKED"]
+    flightMode: Literal["DRIFT", "STEALTH", "CRUISE", "BURN"]
 
 class Ship(TypedDict):
     symbol: str
-    registration: Dict[str, str]
-    nav: Dict[str, Any]
+    registration: ShipRegistration
+    nav: ShipNav
+    crew: Dict[str, Any]
+    frame: Dict[str, Any]
+    reactor: Dict[str, Any]
+    engine: Dict[str, Any]
+    modules: List[Dict[str, Any]]
+    mounts: List[Dict[str, Any]]
+    cargo: Dict[str, Any]
+    fuel: Dict[str, Any]
 
 class AutomatedTrader:
     """Automated trading agent for Space Traders"""
@@ -55,6 +82,9 @@ class AutomatedTrader:
         
         # Performance metrics
         self.cycle_count: int = 0
+        self.total_profits: int = 0
+        self.trades_completed: int = 0
+        self.failed_trades: int = 0
         
         # Initialize persistence
         self.load_state()
@@ -95,6 +125,12 @@ class AutomatedTrader:
                 self.known_markets = state.get('known_markets', {})
                 self.visited_waypoints = set(state.get('visited_waypoints', []))
                 self.market_trends = state.get('market_trends', {})
+                self.total_profits = state.get('total_profits', 0)
+                self.trades_completed = state.get('trades_completed', 0)
+                self.failed_trades = state.get('failed_trades', 0)
+                self.mining_attempts = state.get('mining_attempts', 0)
+                self.mining_successes = state.get('mining_successes', 0)
+                self.cycle_count = state.get('cycle_count', 0)
                 logging.info("State loaded successfully")
         except Exception as e:
             logging.error(f"Failed to load state: {e}")
@@ -104,10 +140,11 @@ class AutomatedTrader:
         if self.running:
             logging.warning("Agent already running")
             return
-            
+        
         self.running = True
         if self.status_callback:
-            self.status_callback({"status": "starting", "message": f"Starting agent with token: {self.client.token[:8]}..."})
+            token_prefix = self.client.token[:8] if self.client.token else "No token"
+            self.status_callback({"status": "starting", "message": f"Starting agent with token: {token_prefix}..."})
             
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=1.0)  # Wait for old thread to finish
@@ -188,14 +225,14 @@ class AutomatedTrader:
         try:
             # First check cooldown
             cooldown = self.client.get_ship_cooldown(ship_symbol)
-            if cooldown and "data" in cooldown and cooldown["data"].get("remainingSeconds", 0) > 0:
+            if cooldown and isinstance(cooldown, dict) and "data" in cooldown and cooldown["data"].get("remainingSeconds", 0) > 0:
                 return {"status": "cooldown", "seconds": cooldown["data"]["remainingSeconds"]}
             
             # Attempt mining
             self.mining_attempts += 1
             result = self.client.extract_resources(ship_symbol)
             
-            if result.get("data", {}).get("extraction", {}).get("yield"):
+            if isinstance(result, dict) and result.get("data", {}).get("extraction", {}).get("yield"):
                 self.mining_successes += 1
                 return {"status": "success", "data": result["data"]}
             

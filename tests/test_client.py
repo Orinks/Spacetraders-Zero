@@ -650,12 +650,7 @@ def test_ship_cargo():
         status=200
     )
     
-    result = client.transfer_cargo(
-        "TEST_SHIP",
-        "PRECIOUS_STONES",
-        10,
-        "TEST_SHIP_2"
-    )
+    result = client.transfer_cargo("TEST_SHIP", "TEST_SHIP_2", "PRECIOUS_STONES", 10)
     assert result == mock_transfer
     assert result["data"]["cargo"]["units"] == 40
     
@@ -1113,7 +1108,7 @@ class TestSpaceTradersClient(unittest.TestCase):
         logging.info("[TEST] Testing adaptive rate limiting with simulated slow responses")
         
         # Set up time mock to advance by 2.0 seconds each call to simulate slow responses
-        current_time = 0
+        current_time = 0.0  # Use float for time
         def time_side_effect():
             nonlocal current_time
             current_time += 2.0  # Simulate slow responses

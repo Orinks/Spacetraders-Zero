@@ -352,17 +352,18 @@ class MainWindow(wx.Frame):
             self.trades_info.SetLabel(f"Trades: {self.agent.trades_completed} completed, {self.agent.failed_trades} failed")
             
             # Update API health info
-            error_rate = (self.client.error_count / self.client.request_count * 100) if self.client.request_count > 0 else 0
-            status = "PAUSED" if error_rate > 20 else "OK"
+            error_rate = (self.client.error_count / self.client.request_count * 100) if self.client.request_count > 0 else 0.0
+            status = "PAUSED" if error_rate > 20.0 else "OK"
             
             # Calculate recent error rate from history
-            recent_errors = len([t for t, _ in self.client.error_history if t > time.time() - 300])  # Last 5 minutes
+            current_time = time.time()
+            recent_errors = len([t for t, _ in self.client.error_history if float(t) > current_time - 300.0])  # Last 5 minutes
             recent_rate = f"Recent: {recent_errors} in 5m"
             
             self.api_health.SetLabel(f"API Health: {error_rate:.1f}% errors ({self.client.error_count}/{self.client.request_count}) - {status} - {recent_rate}")
             
             # Update color based on status
-            if error_rate > 20:
+            if error_rate > 20.0:
                 self.api_health.SetForegroundColour(wx.RED)
             elif error_rate > 10:
                 self.api_health.SetForegroundColour(wx.Colour(255, 140, 0))  # Orange

@@ -206,7 +206,7 @@ def test_mining():
                             "units": 10
                         },
                         "cooldown": {
-                            "remainingSeconds": 60
+                            "remainingSeconds": 60.0  # Use float for remaining seconds
                         }
                     },
                     "cargo": {
