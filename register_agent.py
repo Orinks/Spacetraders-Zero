@@ -1,5 +1,5 @@
 from src.api.client import SpaceTradersClient
-import logging
+from src.api.client import logging
 import time
 
 logging.basicConfig(level=logging.INFO)

@@ -12,8 +12,7 @@ if src_dir not in sys.path:
     sys.path.append(src_dir)
 
 from src.api.client import SpaceTradersClient
-from persistence import StateManager
-
+from src.persistence import StateManager
 class ShipMount(TypedDict):
     symbol: str
     name: str
