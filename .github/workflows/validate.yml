@@ -45,30 +45,32 @@ jobs:
       if: runner.os == 'Linux'
       shell: bash
       run: |
-        # Compile requirements without wxPython for Linux
+        # Create Linux-specific requirements without wxPython
         grep -v "wxPython" requirements.in > requirements.linux.in
+        # Compile requirements separately
         pip-compile requirements.linux.in --output-file=requirements.linux.txt
-        pip-compile dev-requirements.in --output-file=dev-requirements.txt
+        pip-compile dev-requirements.in --output-file=dev-requirements.txt --no-emit-index-url
     
     - name: Compile requirements (Windows)
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        pip-compile requirements.in --output-file=requirements.txt
-        pip-compile dev-requirements.in --output-file=dev-requirements.txt
+        # Compile requirements separately
+        pip-compile requirements.in --output-file=requirements.txt --no-emit-index-url
+        pip-compile dev-requirements.in --output-file=dev-requirements.txt --no-emit-index-url
     
     - name: Install Python dependencies (Linux)
       if: runner.os == 'Linux'
       shell: bash
       run: |
-        pip-sync requirements.linux.txt dev-requirements.txt
+        pip install -r requirements.linux.txt -r dev-requirements.txt
         pip install -e .
     
     - name: Install Python dependencies (Windows)
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        pip-sync requirements.txt dev-requirements.txt
+        pip install -r requirements.txt -r dev-requirements.txt
         pip install -e .
     
     - name: Run config tests
