@@ -3,6 +3,8 @@ name: Validate and Secure
 on:
   push:
     branches: [ main ]
+  pull_request:
+    branches: [ main ]
   schedule:
     - cron: '0 0 * * 0'  # Weekly security scan
 
@@ -28,10 +30,14 @@ jobs:
         python -m pip install --upgrade pip wheel setuptools
         pip install -r requirements.txt
         pip install pytest pytest-mock mypy types-requests bandit safety
+        pip install -e .  # Install package in development mode
     
     - name: Run tests
+      env:
+        SPACETRADERS_TOKEN: test-token
+        SPACETRADERS_API_URL: https://api.spacetraders.io/v2
       run: |
-        python -m pytest -v
+        python -m pytest tests/ -v
     
     - name: Run type checking
       run: |
@@ -50,8 +56,8 @@ jobs:
     - uses: actions/checkout@v3
     - name: Create date-based tag
       run: |
-        TAG="v$(date +'%Y.%m.%d')"
-        git tag $TAG
-        git push origin $TAG
+        TAG_NAME=$(date +'%Y.%m.%d-%H%M')
+        git tag $TAG_NAME
+        git push origin $TAG_NAME
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
