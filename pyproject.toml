@@ -1,0 +1,6 @@
+[build-system]
+requires = [
+    "setuptools~=69.1",  # Pin to 69.1.x series
+    "wheel",
+]
+build-backend = "setuptools.build_meta"

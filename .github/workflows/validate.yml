@@ -23,10 +23,10 @@ jobs:
       with:
         python-version: ${{ matrix.python-version }}
     
-    - name: Upgrade pip and setuptools
+    - name: Upgrade pip
       shell: bash
       run: |
-        python -m pip install --upgrade pip wheel setuptools
+        python -m pip install --upgrade pip wheel
     
     - name: Install Linux system dependencies
       if: runner.os == 'Linux'
@@ -44,10 +44,8 @@ jobs:
       if: runner.os == 'Linux'
       shell: bash
       run: |
-        # First install setuptools and packaging
-        pip install setuptools==69.1.1 packaging>=22.0
-        # Then create a temporary requirements file without wxPython and setuptools
-        grep -v "wxPython\|setuptools\|packaging" requirements.txt > requirements_linux.txt
+        # Create a temporary requirements file without wxPython
+        grep -v "wxPython" requirements.txt > requirements_linux.txt
         pip install -r requirements_linux.txt
         pip install pytest pytest-mock mypy types-requests bandit safety
         pip install -e .
