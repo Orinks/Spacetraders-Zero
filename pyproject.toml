@@ -2,7 +2,7 @@
 requires = [
     "setuptools~=69.1",  # Pin to 69.1.x series
     "wheel",
-    "packaging>=22.0",
+    "packaging>=21.0,<22.0",  # Match safety's requirement
 ]
 build-backend = "setuptools.build_meta"
 
