@@ -107,13 +107,19 @@ jobs:
     needs: validate
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
     - name: Create date-based tag
       shell: bash
       run: |
         TAG_NAME=$(date +'%Y.%m.%d-%H%M')
+        git config user.name "GitHub Actions"
+        git config user.email "actions@github.com"
         git tag $TAG_NAME
         git push origin $TAG_NAME
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_TOKEN: ${{ github.token }}
