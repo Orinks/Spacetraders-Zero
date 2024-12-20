@@ -15,7 +15,7 @@ license = {text = "MIT"}
 requires-python = ">=3.12"
 dependencies = [
     "requests>=2.31.0",
-    "pydantic==2.10.4",  # Pin to exact version to avoid conflicts
+    "pydantic>=2.5.2,<3.0.0",  # Use newer version compatible with Python 3.12
     "python-dotenv>=1.0.0",
     "responses>=0.24.1",
     "aiohttp>=3.9.1",
