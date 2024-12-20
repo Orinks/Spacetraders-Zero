@@ -23,5 +23,8 @@ ENV/
 # Application state
 agent_state.json
 
+# Scripts directory
+scripts/
+
 # Misc
 codebuff.txt
