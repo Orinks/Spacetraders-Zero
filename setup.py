@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="spacetraders-zero",
-    version="0.1.0.dev0",  # Using PEP 440 version format
+    version="0.1.0",  # Simple version string
     packages=find_packages(where="src"),
     package_dir={"": "src"},
     include_package_data=True,  # Include files from MANIFEST.in
