@@ -9,7 +9,7 @@ if __name__ == "__main__":
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     sys.path.insert(0, project_root)
 
-from ui.main_window import MainWindow
+from src.ui.main_window import MainWindow
 
 def main():
     """Main entry point for SpaceTraders Zero"""
