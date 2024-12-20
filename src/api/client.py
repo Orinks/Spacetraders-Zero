@@ -247,8 +247,8 @@ class SpaceTradersClient:
                     self._handle_request_error(e, endpoint)
                     raise
                 
-                # Exponential backoff with jitter
-                delay = min(300, (2 ** retries) + random.uniform(0, 0.1))
+                # Exponential backoff with jitter - using random is acceptable here as it's not for security purposes
+                delay = min(300, (2 ** retries) + random.uniform(0, 0.1))  # nosec B311
                 time.sleep(delay)
             finally:
                 self._update_circuit_state(success, endpoint)
