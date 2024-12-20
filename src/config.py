@@ -8,6 +8,10 @@ from typing import Optional, Any
 
 logger = logging.getLogger(__name__)
 
+# Default paths for configuration files
+CONFIG_PATH = 'config.json'
+ENV_PATH = '.env'
+
 class Settings(BaseSettings):
     """Application settings validated with Pydantic."""
     
@@ -19,7 +23,7 @@ class Settings(BaseSettings):
 
     def model_post_init(self, _: Any) -> None:
         """Handle environment file configuration after initialization."""
-        env_file = getattr(self, '_env_file', '.env')
+        env_file = getattr(self, '_env_file', ENV_PATH)
         if env_file:
             from dotenv import load_dotenv
             load_dotenv(env_file)
@@ -59,14 +63,12 @@ class Settings(BaseSettings):
         description='SpaceTraders API base URL'
     )
     
-    def update_token(self, token: str) -> None:
+    def update_token(self, token: str, config_path: str = CONFIG_PATH, env_path: str = ENV_PATH) -> None:
         """Update the token and save it to both .env and config.json files."""
         self.spacetraders_token = token
         
-        # Update .env file
-        env_path = '.env'
         try:
-            # Read existing content
+            # Update .env file
             lines = []
             if os.path.exists(env_path):
                 with open(env_path, 'r') as f:
@@ -90,13 +92,16 @@ class Settings(BaseSettings):
             
             # Update config.json
             config_data = {}
-            if os.path.exists('config.json'):
-                with open('config.json', 'r') as f:
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
                     config_data = json.load(f)
             
-            config_data['agent_symbol'] = "TEST_AGENT"  # In a real scenario, we'd get this from the registration response
+            config_data['SPACETRADERS_TOKEN'] = token
             
-            with open('config.json', 'w') as f:
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(config_path) or '.', exist_ok=True)
+            
+            with open(config_path, 'w') as f:
                 json.dump(config_data, f, indent=2)
             
             logger.info("Token updated and saved to .env and config.json files")

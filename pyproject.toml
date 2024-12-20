@@ -1,0 +1,48 @@
+[build-system]
+requires = [
+    "setuptools>=69.0.2", 
+    "wheel",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spacetraders-zero"
+version = "0.1.0"
+description = "A Python client for SpaceTraders.io"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Joshua Orink", email = "joshuaorink@gmail.com"}
+]
+requires-python = ">=3.12"
+dependencies = [
+    "requests>=2.32.2",
+    "pydantic>=2.5.2,<3.0.0",  
+    "python-dotenv>=1.0.0",
+    "responses>=0.24.1",
+    "aiohttp>=3.9.4",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+packages = ["api", "agents", "ui"]
+
+[tool.setuptools.package-data]
+"*" = ["py.typed", "*.pyi"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+check_untyped_defs = true
+disallow_any_generics = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+mypy_path = "src"
+namespace_packages = true
+explicit_package_bases = true
+files = ["src"]

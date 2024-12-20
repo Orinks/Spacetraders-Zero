@@ -3,7 +3,7 @@ import os
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 
 import logging
-from api.client import SpaceTradersClient
+from src.api.client import SpaceTradersClient
 import time
 from datetime import datetime
 

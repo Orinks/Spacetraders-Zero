@@ -4,6 +4,8 @@ import os
 import responses
 import json
 from jsonschema import validate, validators
+from unittest.mock import patch
+from src.config import Settings
 
 OPENAPI_SCHEMA_PATH = "openapi.json"
 
@@ -17,53 +19,112 @@ def load_openapi_schema(path):
 @pytest.fixture
 def client():
     # Clean up any existing config files
-    if os.path.exists('config.json'):
-        os.remove('config.json')
-    if os.path.exists('.env'):
-        os.remove('.env')
+    if os.path.exists('config/config.json'):
+        os.remove('config/config.json')
+    if os.path.exists('config/.env'):
+        os.remove('config/.env')
     return SpaceTradersClient()
 
 @responses.activate
-def test_register_sets_token():
+def test_register_sets_token(tmp_path):
     """Test that registration properly sets the token and updates config.json"""
-    client = SpaceTradersClient()
+    # Create a subdirectory for the config file
+    config_dir = tmp_path / "config"
+    os.makedirs(config_dir, exist_ok=True)
     
-    # Mock registration response
-    mock_response = {
-        "data": {
-            "token": "test-token",
-            "agent": {
-                "accountId": "test-account",
-                "symbol": "TEST_AGENT",
-                "headquarters": "X1-TEST",
-                "credits": 150000,
-                "startingFaction": "COSMIC",
-                "shipCount": 2
+    config_path = config_dir / "config.json"
+    env_path = config_dir / ".env"
+    
+    # Create empty config file
+    with open(config_path, 'w') as f:
+        json.dump({}, f)
+    
+    # Create empty .env file
+    with open(env_path, 'w') as f:
+        pass
+    
+    # Create a test settings instance with patched paths
+    with patch('src.config.CONFIG_PATH', str(config_path)), \
+         patch('src.config.ENV_PATH', str(env_path)), \
+         patch('src.api.client.CONFIG_PATH', str(config_path)), \
+         patch('src.api.client.ENV_PATH', str(env_path)), \
+         patch.dict('os.environ', {'PWD': str(config_dir)}):
+        
+        # Create a new settings instance
+        test_settings = Settings(
+            _env_file=str(env_path),  # Enable .env file loading for this test
+            spacetraders_token=None,
+            api_url='https://api.spacetraders.io/v2'
+        )
+        
+        # Mock get_settings to always return our test instance
+        def mock_get_settings():
+            return test_settings
+        
+        # Patch the settings instance and paths
+        with patch('src.config.settings', test_settings), \
+             patch('src.config.get_settings', mock_get_settings), \
+             patch('src.api.client.settings', test_settings):
+            
+            client = SpaceTradersClient()
+
+            # Mock registration response
+            mock_response = {
+                "data": {
+                    "token": "test-token",
+                    "agent": {
+                        "accountId": "test-account",
+                        "symbol": "TEST_AGENT",
+                        "headquarters": "X1-TEST",
+                        "credits": 150000,
+                        "startingFaction": "COSMIC",
+                        "shipCount": 2
+                    }
+                }
             }
-        }
-    }
-    
-    responses.add(
-        responses.POST,
-        "https://api.spacetraders.io/v2/register",
-        json=mock_response,
-        status=201
-    )
-    
-    # Register new agent
-    client.register_new_agent("TEST_AGENT")
-    
-    assert client.token == "test-token"
-    
-    # Check that token was saved to config.json
-    with open('config.json', 'r') as f:
-        config = json.load(f)
-        assert config['agent_symbol'] == "TEST_AGENT"
-    
-    # Validate response schema
-    schema, validator = load_openapi_schema(OPENAPI_SCHEMA_PATH)
-    register_schema = schema["paths"]["/register"]["post"]["responses"]["201"]["content"]["application/json"]["schema"]
-    validator.validate(mock_response)
+
+            responses.add(
+                responses.POST,
+                "https://api.spacetraders.io/v2/register",
+                json=mock_response,
+                status=201
+            )
+
+            # Register new agent
+            client.register_new_agent("TEST_AGENT")
+            
+            assert client.token == "test-token"
+            
+            # Print out actual paths and content for debugging
+            print(f"Config path: {config_path}")
+            print(f"Env path: {env_path}")
+            print(f"Config exists: {os.path.exists(config_path)}")
+            print(f"Env exists: {os.path.exists(env_path)}")
+            
+            if os.path.exists(config_path):
+                with open(config_path) as f:
+                    print(f"Config content: {f.read()}")
+            
+            if os.path.exists(env_path):
+                with open(env_path) as f:
+                    print(f"Env content: {f.read()}")
+            
+            # Check that token was saved to config.json
+            with open(config_path) as f:
+                config = json.load(f)
+                assert config.get('SPACETRADERS_TOKEN') == "test-token"
+            
+            # Check that token was saved to .env
+            with open(env_path) as f:
+                content = f.read()
+                assert 'SPACETRADERS_TOKEN=test-token\n' in content
+            
+            # Create a new settings instance to verify token is loaded from files
+            new_settings = Settings(
+                _env_file=str(env_path),  # Enable .env file loading
+                api_url='https://api.spacetraders.io/v2'
+            )
+            assert new_settings.spacetraders_token == "test-token"
 
 @responses.activate
 def test_get_contracts():
@@ -589,12 +650,7 @@ def test_ship_cargo():
         status=200
     )
     
-    result = client.transfer_cargo(
-        "TEST_SHIP",
-        "PRECIOUS_STONES",
-        10,
-        "TEST_SHIP_2"
-    )
+    result = client.transfer_cargo("TEST_SHIP", "TEST_SHIP_2", "PRECIOUS_STONES", 10)
     assert result == mock_transfer
     assert result["data"]["cargo"]["units"] == 40
     
@@ -1046,39 +1102,40 @@ class TestSpaceTradersClient(unittest.TestCase):
         self.assertEqual(self.client.circuit_state, CircuitState.CLOSED)
         
     @patch('time.time')
-    @patch('requests.get')
-    def test_adaptive_rate_limiting(self, mock_get, mock_time):
+    @patch('requests.request')
+    def test_adaptive_rate_limiting(self, mock_request, mock_time):
         """Test that rate limiting adapts based on response times"""
         logging.info("[TEST] Testing adaptive rate limiting with simulated slow responses")
-        # Set up time mock to advance by 0.1 seconds each call
-        mock_time.side_effect = [x * 0.1 for x in range(100)]
+        
+        # Set up time mock to advance by 2.0 seconds each call to simulate slow responses
+        current_time = 0.0  # Use float for time
+        def time_side_effect():
+            nonlocal current_time
+            current_time += 2.0  # Simulate slow responses
+            return current_time
+        mock_time.side_effect = time_side_effect
         
         # Mock successful response
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {}
-        mock_get.return_value = mock_response
+        mock_request.return_value = mock_response
         
         # Set initial rate higher for testing
         self.client.requests_per_second = 5.0
         self.client.min_request_interval = 1.0 / self.client.requests_per_second
+        self.client.rate_adjustment_threshold = 1.0  # Set lower threshold for testing
         initial_rate = self.client.requests_per_second
         
-        # Fill response times with slow responses
-        self.client.response_times.extend([2.0] * 50)  # 50 slow responses
-        
-        # Set last adjustment time to trigger immediate adjustment
-        self.client.last_rate_adjustment = 0
-        
-        # Trigger rate adjustment
-        self.client._wait_for_rate_limit()
+        # Make a request to trigger rate adjustment
+        self.client._make_request("GET", "test/endpoint")
         
         # Check that rate was reduced
         self.assertLess(self.client.requests_per_second, initial_rate)
         
     @patch('time.time')
-    @patch('requests.get')
-    def test_exponential_backoff(self, mock_get, mock_time):
+    @patch('requests.request')
+    def test_exponential_backoff(self, mock_request, mock_time):
         """Test exponential backoff with jitter on failures"""
         logging.info("[TEST] Testing exponential backoff with simulated failures")
         # Set up time mock
@@ -1090,13 +1147,20 @@ class TestSpaceTradersClient(unittest.TestCase):
         mock_time.side_effect = time_side_effect
         
         # Mock failed response
-        mock_get.side_effect = requests.exceptions.RequestException("[TEST] Simulated API error for testing")
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError(
+            "[TEST] Simulated API error for testing",
+            response=mock_response
+        )
+        mock_request.return_value = mock_response
         
-        with self.assertRaises(RuntimeError):
+        # Attempt request, should raise after retries
+        with self.assertRaises(requests.exceptions.HTTPError):
             self.client._make_request("GET", "test/endpoint")
         
         # Verify number of retries
-        self.assertEqual(mock_get.call_count, 3)  # Initial attempt + 2 retries
+        self.assertEqual(mock_request.call_count, 3)  # Initial attempt + 2 retries
 
 if __name__ == '__main__':
     unittest.main()

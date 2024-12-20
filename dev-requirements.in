@@ -1,0 +1,9 @@
+# Development dependencies
+pytest>=8.3.4
+pytest-mock>=3.14.0
+mypy>=1.13.0
+types-requests>=2.32.0
+bandit>=1.8.0
+safety==2.3.5  # Pin to older version to avoid pydantic conflicts
+jsonschema>=4.20.0  # Required for API response validation in tests
+responses>=0.24.1  # Required for mocking HTTP requests in tests
