@@ -44,8 +44,10 @@ jobs:
       if: runner.os == 'Linux'
       shell: bash
       run: |
-        # Create a temporary requirements file without wxPython
-        grep -v "wxPython" requirements.txt > requirements_linux.txt
+        # First install setuptools and packaging
+        pip install setuptools==69.1.1 packaging>=22.0
+        # Then create a temporary requirements file without wxPython and setuptools
+        grep -v "wxPython\|setuptools\|packaging" requirements.txt > requirements_linux.txt
         pip install -r requirements_linux.txt
         pip install pytest pytest-mock mypy types-requests bandit safety
         pip install -e .
