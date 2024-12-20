@@ -1,4 +1,4 @@
-# wxPython is installed via system package (python3-wxgtk4.0)
+# wxPython is installed via system package (python3-wxgtk4.0) on Linux
 # Core dependencies
 requests==2.31.0
 python-dotenv==1.0.0
@@ -13,3 +13,4 @@ safety==2.3.5
 pydantic==2.5.2
 pydantic-settings==2.1.0
 aiohttp==3.9.1
+wxPython==4.2.1  # Required for Windows. On Linux, use python3-wxgtk4.0 package
