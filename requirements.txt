@@ -13,4 +13,4 @@ safety==2.3.5
 pydantic==2.5.2
 pydantic-settings==2.1.0
 aiohttp==3.9.1
-wxPython==4.2.1  # Required for Windows. On Linux, use python3-wxgtk4.0 package
+wxPython==4.2.2  # Required for Windows. On Linux, use python3-wxgtk4.0 package
