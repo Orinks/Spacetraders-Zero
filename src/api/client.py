@@ -85,32 +85,12 @@ class SpaceTradersClient:
         self.last_error_reset: float = time.time()
 
     def _wait_for_rate_limit(self) -> None:
-        """Wait if necessary to respect rate limits with adaptive adjustment"""
+        """Wait if necessary to respect rate limits"""
         current_time = time.time()
         
         # Clean up old timestamps
         while self.request_timestamps and current_time - self.request_timestamps[0] > self.request_window:
             self.request_timestamps.popleft()
-        
-        # Adjust rate limits based on response times
-        if len(self.response_times) > 0:
-            last_adjustment_age = current_time - (self.last_rate_adjustment or 0)
-            if last_adjustment_age > self.rate_adjustment_interval:
-                avg_response_time = statistics.mean(self.response_times)
-                old_rate = self.requests_per_second
-                
-                if avg_response_time > self.rate_adjustment_threshold:
-                    # More aggressive rate reduction (30%) when response times are high
-                    self.requests_per_second = max(0.1, self.requests_per_second * 0.7)
-                else:
-                    # Gradual rate increase (10%) when response times are good
-                    self.requests_per_second = min(10.0, self.requests_per_second * 1.1)
-                
-                if old_rate != self.requests_per_second:
-                    self.min_request_interval = 1.0 / self.requests_per_second
-                    self.logger.info(f"Adjusted rate limit to {self.requests_per_second:.1f} requests/second")
-                
-                self.last_rate_adjustment = current_time
         
         # Check if we need to wait
         if len(self.request_timestamps) >= self.burst_limit:
@@ -218,39 +198,60 @@ class SpaceTradersClient:
         self.cache[cache_key] = CacheEntry(data, etag, last_modified)
         self.logger.debug(f"Updated cache for {cache_key}")
 
-    def _make_request(self, method: str, endpoint: str, data: Optional[Dict[str, Any]] = None, params: Optional[Dict[str, Any]] = None, requires_auth: bool = True) -> Dict[str, Any]:
-        """Make a request to the SpaceTraders API with caching and rate limiting."""
-        url = f"{self.base_url}/{endpoint}"
-        start_time = time.time()
+    def _make_request(self, method: str, endpoint: str, data: Optional[Dict[str, Any]] = None, **kwargs) -> Dict[str, Any]:
+        """Make a request to the SpaceTraders API with rate limiting and error handling."""
+        if not self._check_circuit_breaker(endpoint):
+            raise RuntimeError(f"Circuit breaker is open for {endpoint}")
 
-        try:
-            self._wait_for_rate_limit()
-            self._check_circuit_breaker(endpoint)
-            self._log_request(method, endpoint, params, data)
-
-            response = requests.request(
-                method=method,
-                url=url,
-                headers=self._get_headers() if requires_auth else {},
-                params=params,
-                json=data
-            )
-            
-            duration = time.time() - start_time
-            self._log_response(response, duration)
-            
-            response.raise_for_status()
-            result = cast(Dict[str, Any], response.json())
-            
-            if method == "GET" and self.cache_enabled:
-                self._update_cache(endpoint, result, response, params)
-            
-            self._update_circuit_state(True, endpoint)
-            return result
-
-        except Exception as e:
-            self._handle_error(endpoint, e)
-            raise
+        retries = 0
+        max_retries = 2
+        success = False
+        
+        while retries <= max_retries:
+            try:
+                self._wait_for_rate_limit()
+                start_time = time.time()
+                
+                url = f"{self.base_url}/{endpoint}"
+                headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+                
+                # Add data to request if provided
+                if data is not None:
+                    kwargs["json"] = data
+                
+                response = requests.request(method, url, headers=headers, **kwargs)
+                
+                # Log response details for debugging
+                duration = time.time() - start_time
+                self.response_times.append(duration)
+                while len(self.response_times) > 100:  # Keep last 100 response times
+                    self.response_times.popleft()
+                    
+                self._log_response(response, duration)
+                
+                # Adjust rate limits based on response times
+                if len(self.response_times) > 0:
+                    avg_response_time = statistics.mean(self.response_times)
+                    if avg_response_time > self.rate_adjustment_threshold:
+                        self.requests_per_second = max(0.1, self.requests_per_second * 0.5)
+                        self.min_request_interval = 1.0 / self.requests_per_second
+                        self.logger.info(f"Reduced rate limit to {self.requests_per_second:.1f} requests/second due to high response times")
+                
+                response.raise_for_status()
+                success = True
+                return response.json()
+                
+            except Exception as e:
+                retries += 1
+                if retries > max_retries:
+                    self._handle_request_error(e, endpoint)
+                    raise
+                
+                # Exponential backoff with jitter
+                delay = min(300, (2 ** retries) + random.uniform(0, 0.1))
+                time.sleep(delay)
+            finally:
+                self._update_circuit_state(success, endpoint)
 
     def _get_headers(self) -> Dict[str, str]:
         """Get headers for API requests"""
@@ -265,18 +266,30 @@ class SpaceTradersClient:
             "Content-Type": "application/json"
         }
 
-    def register_new_agent(self, symbol: str, faction: str = "COSMIC") -> Dict[str, Any]:
-        """Register a new agent and get access token"""
+    def register_new_agent(self, agent_symbol: str) -> Dict[str, Any]:
+        """Register a new agent and save the token"""
         response = self._make_request(
             "POST",
             "register",
-            data={"symbol": symbol, "faction": faction},
-            requires_auth=False
+            data={
+                "symbol": agent_symbol,
+                "faction": "COSMIC"
+            }
         )
         
-        if isinstance(response, dict) and "data" in response and "token" in response["data"]:
-            self.token = response["data"]["token"]
-            
+        # Save token to config and .env files
+        self.token = response["data"]["token"]
+        with open(CONFIG_PATH, 'r+') as f:
+            config = json.load(f)
+            config["SPACETRADERS_TOKEN"] = self.token
+            f.seek(0)
+            json.dump(config, f, indent=4)
+            f.truncate()
+        
+        # Update .env file
+        with open(ENV_PATH, 'a') as f:
+            f.write(f"\nSPACETRADERS_TOKEN={self.token}\n")
+        
         return response
 
     def get_agent(self) -> Dict[str, Any]:
@@ -519,6 +532,12 @@ class SpaceTradersClient:
                 params=params,
                 json=json_data
             )
+            duration = time.time() - time.time()
+            self.response_times.append(duration)
+            while len(self.response_times) > 100:  # Keep last 100 response times
+                self.response_times.popleft()
+                
+            self._log_response(response, duration)
             response.raise_for_status()
             return cast(Dict[str, Any], response.json())
         except Exception as e:
@@ -684,3 +703,27 @@ class SpaceTradersClient:
             except:
                 body = error.response.text[:1000] + "..." if len(error.response.text) > 1000 else error.response.text
             self.logger.error(f"Response Body: {body}")
+
+    def _handle_request_error(self, error: Exception, endpoint: str):
+        """Handle API errors and track error rate"""
+        current_time = time.time()
+        
+        # Record error
+        self.error_count += 1
+        self.error_history.append((current_time, endpoint))
+        
+        # Reset error count if enough time has passed
+        if self.last_error_time is not None and current_time - self.last_error_time > self.reset_timeout:
+            self.error_count = 1
+            self.last_error_reset = current_time
+        
+        self.last_error_time = current_time
+        
+        # Log the error with appropriate severity
+        if isinstance(error, requests.exceptions.HTTPError):
+            if error.response is not None and error.response.status_code >= 500:
+                self.logger.error(f"Server error for {endpoint}: {str(error)}")
+            else:
+                self.logger.warning(f"HTTP error for {endpoint}: {str(error)}")
+        else:
+            self.logger.error(f"Network error for {endpoint}: {str(error)}")

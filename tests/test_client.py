@@ -1107,39 +1107,40 @@ class TestSpaceTradersClient(unittest.TestCase):
         self.assertEqual(self.client.circuit_state, CircuitState.CLOSED)
         
     @patch('time.time')
-    @patch('requests.get')
-    def test_adaptive_rate_limiting(self, mock_get, mock_time):
+    @patch('requests.request')
+    def test_adaptive_rate_limiting(self, mock_request, mock_time):
         """Test that rate limiting adapts based on response times"""
         logging.info("[TEST] Testing adaptive rate limiting with simulated slow responses")
-        # Set up time mock to advance by 0.1 seconds each call
-        mock_time.side_effect = [x * 0.1 for x in range(100)]
+        
+        # Set up time mock to advance by 2.0 seconds each call to simulate slow responses
+        current_time = 0
+        def time_side_effect():
+            nonlocal current_time
+            current_time += 2.0  # Simulate slow responses
+            return current_time
+        mock_time.side_effect = time_side_effect
         
         # Mock successful response
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {}
-        mock_get.return_value = mock_response
+        mock_request.return_value = mock_response
         
         # Set initial rate higher for testing
         self.client.requests_per_second = 5.0
         self.client.min_request_interval = 1.0 / self.client.requests_per_second
+        self.client.rate_adjustment_threshold = 1.0  # Set lower threshold for testing
         initial_rate = self.client.requests_per_second
         
-        # Fill response times with slow responses
-        self.client.response_times.extend([2.0] * 50)  # 50 slow responses
-        
-        # Set last adjustment time to trigger immediate adjustment
-        self.client.last_rate_adjustment = 0
-        
-        # Trigger rate adjustment
-        self.client._wait_for_rate_limit()
+        # Make a request to trigger rate adjustment
+        self.client._make_request("GET", "test/endpoint")
         
         # Check that rate was reduced
         self.assertLess(self.client.requests_per_second, initial_rate)
         
     @patch('time.time')
-    @patch('requests.get')
-    def test_exponential_backoff(self, mock_get, mock_time):
+    @patch('requests.request')
+    def test_exponential_backoff(self, mock_request, mock_time):
         """Test exponential backoff with jitter on failures"""
         logging.info("[TEST] Testing exponential backoff with simulated failures")
         # Set up time mock
@@ -1151,13 +1152,20 @@ class TestSpaceTradersClient(unittest.TestCase):
         mock_time.side_effect = time_side_effect
         
         # Mock failed response
-        mock_get.side_effect = requests.exceptions.RequestException("[TEST] Simulated API error for testing")
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError(
+            "[TEST] Simulated API error for testing",
+            response=mock_response
+        )
+        mock_request.return_value = mock_response
         
-        with self.assertRaises(RuntimeError):
+        # Attempt request, should raise after retries
+        with self.assertRaises(requests.exceptions.HTTPError):
             self.client._make_request("GET", "test/endpoint")
         
         # Verify number of retries
-        self.assertEqual(mock_get.call_count, 3)  # Initial attempt + 2 retries
+        self.assertEqual(mock_request.call_count, 3)  # Initial attempt + 2 retries
 
 if __name__ == '__main__':
     unittest.main()
