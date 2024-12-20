@@ -42,4 +42,7 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 warn_no_return = true
 warn_unreachable = true
+mypy_path = "src"
+namespace_packages = true
+explicit_package_bases = true
 files = ["src"]
