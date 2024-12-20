@@ -1,6 +1,7 @@
 # wxPython is installed via system package (python3-wxgtk4.0) on Linux
 # Core dependencies
-setuptools>=69.0.2  # Required for Python 3.12 compatibility
+setuptools==69.1.1  # Pin to a known working version
+packaging>=22.0  # Required for setuptools compatibility
 requests==2.31.0
 python-dotenv==1.0.0
 jsonschema==4.20.0
