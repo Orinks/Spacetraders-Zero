@@ -9,6 +9,7 @@ setup(
         "pydantic>=2.5.2",
         "python-dotenv>=1.0.0",
         "responses>=0.24.1",
+        "aiohttp>=3.9.1",
     ],
     python_requires=">=3.12",
 )
