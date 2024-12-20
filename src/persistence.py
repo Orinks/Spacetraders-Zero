@@ -6,6 +6,7 @@ import logging
 from typing import Any, Dict, Optional
 from threading import Lock, Timer
 from contextlib import contextmanager
+from typing import cast
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +96,12 @@ class StateManager:
     
     def save_if_changed(self) -> None:
         """Save the current state only if it has changed."""
-        self.save_state(self.get_latest_state() or {})
+        latest_state = self.get_latest_state()
+        if latest_state is not None:
+            self.save_state(latest_state)
+        else:
+            empty_state: Dict[str, Any] = {}
+            self.save_state(empty_state)
     
     def get_latest_state(self) -> Optional[Dict[str, Any]]:
         """
@@ -110,7 +116,7 @@ class StateManager:
             )
             result = cursor.fetchone()
             if result:
-                return json.loads(result[0])
+                return cast(Dict[str, Any], json.loads(result[0]))
             return None
     
     def cleanup_old_states(self, keep_days: int = 7) -> None:

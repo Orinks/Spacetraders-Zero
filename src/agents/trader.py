@@ -1,94 +1,105 @@
-import time
-import threading
-import json
+import os
 import sys
+import time
 import logging
 import requests
-from typing import Dict, Any, List, Optional, Tuple
-from src.api.client import SpaceTradersClient
+from typing import Dict, Any, List, Optional, Tuple, Callable, Set, cast, TypedDict
+from threading import Thread
+
+# Add src directory to Python path
+src_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if src_dir not in sys.path:
+    sys.path.append(src_dir)
+
+from api.client import SpaceTradersClient
+from persistence import StateManager
+
+class ShipMount(TypedDict):
+    symbol: str
+    name: str
+    description: str
+
+class Contract(TypedDict):
+    id: str
+    type: str
+    accepted: bool
+    fulfilled: bool
+
+class Ship(TypedDict):
+    symbol: str
+    registration: Dict[str, str]
+    nav: Dict[str, Any]
 
 class AutomatedTrader:
-    """Basic automated trading agent"""
+    """Automated trading agent for Space Traders"""
     
-    def __init__(self, client: SpaceTradersClient, status_callback=None):
+    def __init__(self, client: SpaceTradersClient, status_callback: Optional[Callable[[Dict[str, Any]], None]] = None):
+        """Initialize the trader with a client instance"""
         self.client = client
-        self.running = False
-        self.thread = None
         self.status_callback = status_callback
-        self.trade_history = []  # Track successful trades
-        self.known_markets = {}  # Cache market data
-        self.market_trends = {}  # Track price history per good
-        self.ship_cargo = {}  # Track cargo per ship
-        self.ship_states = {}  # Track ship states
-        self.visited_waypoints = set()  # Track explored locations
-        self.cycle_count = 0  # Track number of cycles
-        
-        # Mining metrics
+        self.running = False
+        self.thread: Optional[Thread] = None
+        self.start_time = 0.0
+        self.error_count = 0
+        self.max_errors = 5
         self.mining_attempts = 0
         self.mining_successes = 0
+        self.market_trends: Dict[str, Dict[str, Dict[str, List[Any]]]] = {}
+        self.state_manager = StateManager("trader_state.json")
+        self.state = self.state_manager.get_latest_state() or {}
+        
+        # Trading history and market data
+        self.trade_history: List[Dict[str, Any]] = []
+        self.known_markets: Dict[str, Dict[str, Any]] = {}
+        self.visited_waypoints: Set[str] = set()
         
         # Performance metrics
-        self.total_profits = 0
-        self.trades_completed = 0
-        self.failed_trades = 0
-        self.start_time = None
+        self.cycle_count: int = 0
         
+        # Initialize persistence
         self.load_state()
+
         logging.info("Automated trader initialized")
         
-    def _get_current_state(self) -> dict:
+    def _get_current_state(self) -> Dict[str, Any]:
         """Get the current state as a dictionary."""
         return {
             'trade_history': self.trade_history[-100:],  # Keep last 100 trades
             'known_markets': self.known_markets,
             'visited_waypoints': list(self.visited_waypoints),
             'market_trends': self.market_trends,
-            'total_profits': self.total_profits,
-            'trades_completed': self.trades_completed,
-            'failed_trades': self.failed_trades,
+            'total_profits': 0,
+            'trades_completed': 0,
+            'failed_trades': 0,
             'mining_attempts': self.mining_attempts,
             'mining_successes': self.mining_successes,
             'cycle_count': self.cycle_count,
             'last_update': time.time()
         }
 
-    def save_state(self):
+    def save_state(self) -> None:
         """Save agent state to database"""
         try:
-            if not hasattr(self, 'state_manager'):
-                from persistence import StateManager
-                self.state_manager = StateManager()
-            
             state = self._get_current_state()
             self.state_manager.save_state(state)
             logging.debug("State saved successfully")
         except Exception as e:
             logging.error(f"Failed to save state: {e}")
             
-    def load_state(self):
+    def load_state(self) -> None:
         """Load agent state from database"""
         try:
-            if not hasattr(self, 'state_manager'):
-                from persistence import StateManager
-                self.state_manager = StateManager()
-            
             state = self.state_manager.get_latest_state()
             if state:
                 self.trade_history = state.get('trade_history', [])
                 self.known_markets = state.get('known_markets', {})
                 self.visited_waypoints = set(state.get('visited_waypoints', []))
                 self.market_trends = state.get('market_trends', {})
-                self.total_profits = state.get('total_profits', 0)
-                self.trades_completed = state.get('trades_completed', 0)
-                self.failed_trades = state.get('failed_trades', 0)
-                self.mining_attempts = state.get('mining_attempts', 0)
-                self.mining_successes = state.get('mining_successes', 0)
-                self.cycle_count = state.get('cycle_count', 0)
                 logging.info("State loaded successfully")
         except Exception as e:
             logging.error(f"Failed to load state: {e}")
         
-    def start(self):
+    def start(self) -> None:
         """Start the automated trading"""
         if self.running:
             logging.warning("Agent already running")
@@ -101,12 +112,12 @@ class AutomatedTrader:
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=1.0)  # Wait for old thread to finish
             
-        self.thread = threading.Thread(target=self._run_loop)
+        self.thread = Thread(target=self._run_loop)
         self.thread.daemon = True  # Make thread daemon so it exits when main program exits
         self.thread.start()
         logging.info("Agent thread started")
         
-    def stop(self):
+    def stop(self) -> None:
         """Stop the automated trading"""
         if not self.running:
             logging.warning("Agent already stopped")
@@ -129,7 +140,7 @@ class AutomatedTrader:
         
         logging.info("Agent stopped")
         
-    def _retry_api_call(self, func, *args, max_attempts=3):
+    def _retry_api_call(self, func: Callable[..., Any], *args: Any, max_attempts: int = 3) -> Any:
         """Retry an API call with exponential backoff"""
         for attempt in range(max_attempts):
             try:
@@ -142,56 +153,80 @@ class AutomatedTrader:
                     raise
                 time.sleep(2 ** attempt)  # Exponential backoff
                 
-    def _run_loop(self):
+    def _run_loop(self) -> None:
         """Main automation loop"""
         self.start_time = time.time()
         while self.running:
             try:
-                if self.status_callback:
-                    self.status_callback({"status": "info", "message": "Checking contracts..."})
-                print(f"\nAgent cycle starting...", file=sys.stderr)
-                result = self.run_cycle()
-                print(f"Cycle result: {result}", file=sys.stderr)
-                if result and self.status_callback and result["status"] != "idle":  # Only show meaningful status updates
-                    self.status_callback(result)
-                if not self.running:
-                    break
-                time.sleep(5)  # Don't overwhelm the API
-            except requests.exceptions.HTTPError as e:
-                if self.status_callback:
-                    self.status_callback({
-                        'status': 'error',
-                        'error': str(e)
-                    })
-                if not self.running:
-                    break
-                time.sleep(30)  # Back off on error
-            except Exception as e:
-                if self.status_callback:
-                    self.status_callback({
-                        'status': 'error',
-                        'error': str(e)
-                    })
-                logging.error(f"Error in trader loop: {str(e)}", exc_info=True)
-                if not self.running:
-                    break
-                time.sleep(30)  # Back off on error
+                # Negotiate new contracts if needed
+                contracts = self._get_current_contracts()
+                if not contracts:
+                    ships = self._get_ships()
+                    if ships:
+                        self._negotiate_new_contract(ships[0]["symbol"])
                 
-    def _update_market_trends(self, market_symbol: str, good_symbol: str, price: int):
-        """Track price history for market analysis"""
-        if market_symbol not in self.market_trends:
-            self.market_trends[market_symbol] = {}
-        if good_symbol not in self.market_trends[market_symbol]:
-            self.market_trends[market_symbol][good_symbol] = []
-        self.market_trends[market_symbol][good_symbol].append((time.time(), price))
-        # Keep only last 24 hours of data
-        cutoff = time.time() - (24 * 60 * 60)
-        self.market_trends[market_symbol][good_symbol] = [
-            (t, p) for t, p in self.market_trends[market_symbol][good_symbol] 
-            if t > cutoff
-        ]
+                # Run mining operations
+                if ships:  # Check ships is defined and not empty
+                    self._mine_resources(ships[0]["symbol"])
+                
+                # Save state periodically
+                self.save_state()
+                
+                # Sleep between cycles
+                time.sleep(30)
+                
+            except Exception as e:
+                logging.error(f"Error in automation loop: {e}")
+                self.error_count += 1
+                if self.error_count >= self.max_errors:
+                    logging.error("Maximum errors reached, stopping automation")
+                    self.running = False
+                time.sleep(30)  # Back off on error
 
-    def find_best_trade_route(self, ship_data: Dict[str, Any]) -> Dict[str, Any]:
+    def _mine_resources(self, ship_symbol: str) -> Dict[str, Any]:
+        """Mine resources at current location"""
+        try:
+            # First check cooldown
+            cooldown = self.client.get_ship_cooldown(ship_symbol)
+            if cooldown and "data" in cooldown and cooldown["data"].get("remainingSeconds", 0) > 0:
+                return {"status": "cooldown", "seconds": cooldown["data"]["remainingSeconds"]}
+            
+            # Attempt mining
+            self.mining_attempts += 1
+            result = self.client.extract_resources(ship_symbol)
+            
+            if result.get("data", {}).get("extraction", {}).get("yield"):
+                self.mining_successes += 1
+                return {"status": "success", "data": result["data"]}
+            
+            return {"status": "error", "error": "No resources extracted"}
+            
+        except Exception as e:
+            logging.error(f"Mining error: {e}")
+            return {"status": "error", "error": str(e)}
+
+    def _get_ship_upgrades(self, ship_symbol: str) -> List[Dict[str, Any]]:
+        """Get available ship upgrades at current waypoint"""
+        try:
+            nav = self._retry_api_call(self.client.get_ship, ship_symbol).get("data", {}).get("nav", {})
+            if not nav:
+                return []
+            
+            waypoint = nav.get("waypointSymbol")
+            if not waypoint:
+                return []
+            
+            system = waypoint.split("-")[0]
+            result = self._retry_api_call(self.client.get_ship_mounts, system, waypoint)
+            if result and "data" in result:
+                return cast(List[Dict[str, Any]], result["data"])
+            return []
+            
+        except Exception as e:
+            logging.error(f"Failed to get ship upgrades: {e}")
+            return []
+
+    def find_best_trade_route(self, ship_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Find most profitable trade route from current location"""
         try:
             nav = ship_data.get("nav", {})
@@ -233,10 +268,10 @@ class AutomatedTrader:
                                         profit = sell_good.get("sellPrice", 0) - buy_price
                                         
                                         # Check price trends for stability
-                                        trend_data = self.market_trends.get(market2["symbol"], {}).get(good["symbol"], [])
+                                        trend_data = self.market_trends.get(market2["symbol"], {}).get(good["symbol"], {})
                                         if trend_data:
                                             # Only consider trades where sell price has been stable or increasing
-                                            recent_prices = [p for t, p in trend_data[-5:]]  # Last 5 price points
+                                            recent_prices = trend_data.get("prices", [])[-5:]  # Last 5 price points
                                             if len(recent_prices) >= 2:
                                                 price_stable = all(p2 >= p1 for p1, p2 in zip(recent_prices, recent_prices[1:]))
                                                 if price_stable and profit > best_profit:
@@ -247,7 +282,7 @@ class AutomatedTrader:
                                                         "good": good["symbol"],
                                                         "profit_per_unit": profit,
                                                         "supply_level": supply_level,
-                                                        "total_potential_profit": profit * min(space_available, 10)
+                                                        "total_potential_profit": profit * min(10, supply_level)
                                                     }
                                             logging.info(f"Found better trade route: {best_route}")
             return best_route
@@ -276,7 +311,7 @@ class AutomatedTrader:
             print(f"Error finding nearest market: {e}")
             return None
 
-    def _refuel_ship(self, ship_symbol: str, current_waypoint: str) -> None:
+    def _refuel_ship(self, ship_symbol: str, current_waypoint: str) -> bool:
         """Refuel ship at current waypoint if possible"""
         try:
             # First dock if needed
@@ -313,169 +348,73 @@ class AutomatedTrader:
         return fuel_available >= fuel_required, fuel_required
 
     def run_cycle(self) -> Dict[str, Any]:
-        """Run one cycle of automated trading"""
-        if not self.running:
-            logging.debug("Agent cycle skipped - agent not running")
-            return {"status": "stopped"}
-
-        # Check error rate before proceeding
-        error_rate = (self.client.error_count / self.client.request_count * 100) if self.client.request_count > 0 else 0
-        if error_rate > 20:  # Pause if error rate exceeds 20%
-            logging.warning(f"Pausing agent due to high error rate: {error_rate:.1f}%")
-            return {"status": "paused_high_errors"}
-
-        logging.debug("Starting agent cycle")
-        self.cycle_count += 1
-        
-        # Save state every 10 cycles
-        if self.cycle_count % 10 == 0:
-            self.save_state()
-
+        """Run a single cycle of the automated trader"""
         try:
-            # Get current status once at start of cycle
-            if self.status_callback:
-                self.status_callback({"status": "info", "message": "Checking status..."})
-
-            # First check for contracts
-            try:
-                contracts = self._retry_api_call(self.client.get_contracts)
-                if not contracts or "data" not in contracts:
-                    logging.error("Failed to get contracts data")
-                    return {"status": "error", "error": "Failed to get contracts data"}
-                    
-                active_contracts = [c for c in contracts.get("data", []) 
-                                  if c.get("accepted") and not c.get("fulfilled")]
-
-                # Accept a new contract if we don't have any
-                if not active_contracts:
-                    available_contracts = [c for c in contracts.get("data", []) 
-                                        if not c.get("accepted")]
-                    if available_contracts:
-                        contract = available_contracts[0]
-                        accept_result = self._retry_api_call(self.client.accept_contract, contract["id"])
-                        if accept_result and accept_result.get("data"):
-                            active_contracts = [contract]
-                            logging.info(f"Accepted new contract: {contract['id']}")
-                        else:
-                            logging.error("Failed to accept contract")
-                            return {"status": "error", "error": "Failed to accept contract"}
+            # Check if we have any active contracts
+            contracts = self._get_current_contracts()
+            if not contracts:
+                # No contracts, try to get a new one
+                ships = self._get_ships()
+                if ships:
+                    result = self._negotiate_new_contract(ships[0]["symbol"])
+                    if result:
+                        return {"status": "success", "message": "New contract negotiated"}
                     else:
-                        logging.info("No contracts available")
-                        return {"status": "idle", "message": "No contracts available"}
-                        
-            except Exception as e:
-                logging.error(f"Error getting contracts: {str(e)}")
-                return {"status": "error", "error": f"Error getting contracts: {str(e)}"}
+                        return {"status": "error", "error": "Failed to negotiate contract"}
+                else:
+                    return {"status": "error", "error": "No ships available"}
 
-            # Then ensure we have a mining ship
-            mining_ship_result = self._ensure_mining_ship()
-            if not mining_ship_result["success"]:
-                logging.error(f"Mining ship error: {mining_ship_result.get('error')}")
-                return {"status": "error", "error": mining_ship_result.get('error')}
-            else:
-                logging.info("Mining ship ready")
-
-            # If we have both a contract and a mining ship, start mining
-            if active_contracts and mining_ship_result["success"]:
-                ship = mining_ship_result["ship"]
-                contract = active_contracts[0]
-                return self._handle_mining_contract(contract)
-
-            return {"status": "idle"}
+            # Run mining operations with first ship
+            ships = self._get_ships()
+            if ships and len(ships) > 0:
+                result = self._mine_resources(ships[0]["symbol"])
+                if isinstance(result, dict):
+                    return result
+            return {"status": "idle", "message": "No actions needed"}
 
         except Exception as e:
-            logging.error(f"Error in agent cycle: {str(e)}")
-            if self.status_callback:
-                self.status_callback({"status": "error", "error": str(e)})
-            return {"status": "error", "error": str(e)}
+            error_msg = str(e)
+            logging.error(f"Error in agent cycle: {error_msg}")
+            return {"status": "error", "error": error_msg}
 
-    def run(self):
+    def run(self) -> None:
         """Run the automated trader"""
         try:
             # Check if we have any active contracts
-            contracts = self._retry_api_call(self.client.get_contracts)
-            if not contracts or not contracts.get("data"):
+            contracts = self._get_current_contracts()
+            if not contracts:
                 # No contracts, try to get a new one
-                self._get_new_contract()
-                return
-            
-            # Handle the first contract
-            contract = contracts["data"][0]
-            if contract["type"] == "MINING":
-                try:
-                    self._handle_mining_contract(contract)
-                except Exception as e:
-                    logging.error(f"Error in mining contract: {str(e)}")
-                    # Stop running to prevent excessive API calls
-                    raise Exception("Stopping agent due to error") from e
-            else:
-                logging.info(f"Unsupported contract type: {contract['type']}")
-                
-        except Exception as e:
-            logging.error(f"Error in trader run: {str(e)}")
-            # Stop running to prevent excessive API calls
-            raise
+                ships = self._get_ships()
+                if ships and len(ships) > 0:
+                    self._negotiate_new_contract(ships[0]["symbol"])
+                else:
+                    logging.error("No ships available")
+                    return
 
-    def _extract_resources(self, ship_symbol: str, survey: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """
-        Extract resources from an asteroid or other resource field
-        Args:
-            ship_symbol: The symbol of the ship to extract with
-            survey: Optional survey data to target specific deposits
-        Returns:
-            Dict with extraction results
-        """
-        try:
-            result = self._retry_api_call(self.client.extract_resources, ship_symbol, survey)
-            if result.get("data"):
-                self.mining_attempts += 1
-                self.mining_successes += 1
-                extraction = result["data"].get("extraction", {})
-                logging.info(f"Successfully extracted {extraction.get('yield', {}).get('units')} units of {extraction.get('yield', {}).get('symbol')}")
-            return result
-        except Exception as e:
-            self.mining_attempts += 1
-            logging.error(f"Failed to extract resources: {e}")
-            return {"error": str(e)}
+            # Run mining operations with first ship
+            if ships and len(ships) > 0:
+                self._mine_resources(ships[0]["symbol"])
 
-    def _scan_for_threats(self, ship_symbol: str) -> Tuple[bool, List[Dict[str, Any]]]:
-        """
-        Scan the area for potential threats
-        Args:
-            ship_symbol: The symbol of the ship to scan with
-        Returns:
-            Tuple of (is_safe, detected_ships)
-        """
-        try:
-            result = self._retry_api_call(self.client.scan_ships, ship_symbol)
-            if result.get("data", {}).get("ships"):
-                ships = result["data"]["ships"]
-                # Check for hostile ships (pirates, etc)
-                threats = [s for s in ships if s.get("registration", {}).get("factionSymbol") == "PIRATES"]
-                return (len(threats) == 0, ships)
-            return (True, [])
-        except Exception as e:
-            logging.error(f"Failed to scan for threats: {e}")
-            return (False, [])
+            # Save state periodically
+            self.save_state()
 
-    def _negotiate_new_contract(self, ship_symbol: str) -> Optional[Dict[str, Any]]:
-        """
-        Negotiate a new contract at the current location
-        Args:
-            ship_symbol: The symbol of the ship to negotiate with
-        Returns:
-            Contract data if successful, None otherwise
-        """
+        except Exception as e:
+            logging.error(f"Error in agent run: {str(e)}")
+            self.error_count += 1
+            if self.error_count >= self.max_errors:
+                logging.error("Maximum errors reached, stopping automation")
+                self.running = False
+
+    def _negotiate_new_contract(self, ship_symbol: str) -> Dict[str, Any]:
+        """Negotiate a new contract"""
         try:
-            result = self._retry_api_call(self.client.negotiate_contract, ship_symbol)
-            if result.get("data", {}).get("contract"):
-                contract = result["data"]["contract"]
-                logging.info(f"Negotiated new contract: {contract.get('id')} - {contract.get('type')}")
-                return contract
-            return None
+            result = self.client.negotiate_contract(ship_symbol)
+            if result and "data" in result and "contract" in result["data"]:
+                return cast(Dict[str, Any], result["data"]["contract"])
+            return {"status": "error", "error": "Failed to get contract data"}
         except Exception as e:
             logging.error(f"Failed to negotiate contract: {e}")
-            return None
+            return {"status": "error", "error": str(e)}
 
     def _maintain_ship(self, ship_symbol: str) -> bool:
         """
@@ -595,7 +534,7 @@ class AutomatedTrader:
             logging.error(f"Error finding shipyard: {str(e)}")
             return None
 
-    def _purchase_ship(self, ship_type: str, system: str = None) -> Dict[str, Any]:
+    def _purchase_ship(self, ship_type: str, system: Optional[str] = None) -> Dict[str, Any]:
         """
         Purchase a specific type of ship.
         Args:
@@ -804,8 +743,8 @@ class AutomatedTrader:
             # Navigate to asteroid field
             if target_system != current_system:
                 jump_result = self._jump_to_system(ship_symbol, target_system)
-                if not jump_result["success"]:
-                    return {"status": "error", "error": f"Failed to jump to system: {jump_result['error']}"}
+                if not jump_result:
+                    return {"status": "error", "error": f"Failed to jump to system: {jump_result}"}
             
             nav_result = self._retry_api_call(
                 self.client.navigate_ship,
@@ -814,7 +753,7 @@ class AutomatedTrader:
             )
             
             if "error" in nav_result:
-                return {"status": "error", "error": f"Failed to navigate to asteroid field: {nav_result['error']}"}
+                return {"status": "error", "error": f"Failed to navigate to asteroid field: {nav_result.get('error')}"}
             
             # Wait for arrival
             while True:
@@ -825,7 +764,7 @@ class AutomatedTrader:
                 time.sleep(2)
             
             # Start mining
-            extract_result = self._extract_resources(ship_symbol)
+            extract_result = self._mine_resources(ship_symbol)
             if "error" in extract_result:
                 return {"status": "error", "error": f"Mining failed: {extract_result['error']}"}
                 
@@ -866,3 +805,50 @@ class AutomatedTrader:
             error_msg = str(e)
             logging.error(f"Error finding mining system: {error_msg}")
             return {"success": False, "error": error_msg}
+
+    def _update_market_trends(self, market_symbol: str, good_symbol: str, price: int) -> None:
+        """Track price history for market analysis"""
+        if market_symbol not in self.market_trends:
+            self.market_trends[market_symbol] = {}
+        
+        if good_symbol not in self.market_trends[market_symbol]:
+            self.market_trends[market_symbol][good_symbol] = {"prices": [], "timestamps": []}
+        
+        trend_data = self.market_trends[market_symbol][good_symbol]
+        trend_data["prices"].append(price)
+        trend_data["timestamps"].append(time.time())
+        
+        # Keep only last 24 hours of data
+        cutoff = time.time() - 86400
+        prices_and_times = list(zip(trend_data["prices"], trend_data["timestamps"]))
+        filtered_data = [(p, t) for p, t in prices_and_times if t > cutoff]
+        
+        if filtered_data:
+            prices, timestamps = zip(*filtered_data)
+            trend_data["prices"] = list(prices)
+            trend_data["timestamps"] = list(timestamps)
+        else:
+            trend_data["prices"] = []
+            trend_data["timestamps"] = []
+
+    def _get_current_contracts(self) -> List[Dict[str, Any]]:
+        """Get current contracts"""
+        try:
+            result = self._retry_api_call(self.client.get_contracts)
+            if result and "data" in result:
+                return cast(List[Dict[str, Any]], result["data"])
+            return []
+        except Exception as e:
+            logging.error(f"Failed to get contracts: {e}")
+            return []
+
+    def _get_ships(self) -> List[Dict[str, Any]]:
+        """Get all ships owned by the agent"""
+        try:
+            result = self._retry_api_call(self.client.get_my_ships)
+            if result and "data" in result:
+                return cast(List[Dict[str, Any]], result["data"])
+            return []
+        except Exception as e:
+            logging.error(f"Failed to get ships: {e}")
+            return []

@@ -24,19 +24,22 @@ dependencies = [
 ]
 
 [tool.setuptools]
-packages = ["src"]
-package-data = {"src" = ["py.typed"]}
-package-dir = {"": "src"}
+package-dir = {"" = "src"}
+packages = ["api", "agents", "ui"]
 
-[tool.setuptools.packages.find]
-where = ["src"]
-include = ["*"]
+[tool.setuptools.package-data]
+"*" = ["py.typed", "*.pyi"]
 
 [tool.mypy]
 python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true
-disallow_untyped_defs = false
+disallow_untyped_defs = true
 check_untyped_defs = true
+disallow_any_generics = true
 no_implicit_optional = true
-show_error_codes = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+mypy_path = "src"

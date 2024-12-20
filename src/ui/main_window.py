@@ -585,8 +585,8 @@ class MainWindow(wx.Frame):
                         result = self.client.register_new_agent(agent_name, faction)
                         self.status_text.AppendText("Registration successful! Token received.\n")
                     except requests.exceptions.HTTPError as e:
-                        if e.response.status_code == 409:
-                            self.status_text.AppendText("Registration failed: Agent name already taken. Please try another name.\n")
+                        if hasattr(e, 'response') and e.response is not None and e.response.status_code == 409:
+                            self.status_text.AppendText("Registration failed: Agent name already taken.\n")
                         else:
                             self.status_text.AppendText(f"Registration failed: {str(e)}\n")
                 faction_dialog.Destroy()
