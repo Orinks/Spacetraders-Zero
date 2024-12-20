@@ -2,5 +2,11 @@
 requires = [
     "setuptools~=69.1",  # Pin to 69.1.x series
     "wheel",
+    "packaging>=22.0",
 ]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "spacetraders-zero"
+version = "0.1.0"
+requires-python = ">=3.12"

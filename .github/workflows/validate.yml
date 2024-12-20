@@ -27,6 +27,7 @@ jobs:
       shell: bash
       run: |
         python -m pip install --upgrade pip wheel
+        python -m pip install build  # Add this to handle pyproject.toml
     
     - name: Install Linux system dependencies
       if: runner.os == 'Linux'
@@ -44,11 +45,13 @@ jobs:
       if: runner.os == 'Linux'
       shell: bash
       run: |
-        # Create a temporary requirements file without wxPython
+        # Install build dependencies first
+        pip install -e .
+        # Then install test dependencies
+        pip install pytest pytest-mock mypy types-requests bandit safety
+        # Finally install runtime dependencies (excluding wxPython)
         grep -v "wxPython" requirements.txt > requirements_linux.txt
         pip install -r requirements_linux.txt
-        pip install pytest pytest-mock mypy types-requests bandit safety
-        pip install -e .
     
     - name: Install Python dependencies (Windows)
       if: runner.os == 'Windows'
