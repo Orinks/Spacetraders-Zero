@@ -1,6 +1,7 @@
 # Runtime dependencies
 requests>=2.31.0
 pydantic>=2.5.2,<3.0.0
+pydantic-settings>=2.1.0  # Required for BaseSettings
 python-dotenv>=1.0.0
 responses>=0.24.1
 aiohttp>=3.9.1
