@@ -95,7 +95,7 @@ jobs:
     - name: Run type checking
       shell: bash
       run: |
-        cd src && python -m mypy . --ignore-missing-imports
+        PYTHONPATH=src python -m mypy src --ignore-missing-imports
     
     - name: Run security checks
       shell: bash
