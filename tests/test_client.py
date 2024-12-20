@@ -4,6 +4,8 @@ import os
 import responses
 import json
 from jsonschema import validate, validators
+from unittest.mock import patch
+from src.config import Settings
 
 OPENAPI_SCHEMA_PATH = "openapi.json"
 
@@ -17,53 +19,112 @@ def load_openapi_schema(path):
 @pytest.fixture
 def client():
     # Clean up any existing config files
-    if os.path.exists('config.json'):
-        os.remove('config.json')
-    if os.path.exists('.env'):
-        os.remove('.env')
+    if os.path.exists('config/config.json'):
+        os.remove('config/config.json')
+    if os.path.exists('config/.env'):
+        os.remove('config/.env')
     return SpaceTradersClient()
 
 @responses.activate
-def test_register_sets_token():
+def test_register_sets_token(tmp_path):
     """Test that registration properly sets the token and updates config.json"""
-    client = SpaceTradersClient()
+    # Create a subdirectory for the config file
+    config_dir = tmp_path / "config"
+    os.makedirs(config_dir, exist_ok=True)
     
-    # Mock registration response
-    mock_response = {
-        "data": {
-            "token": "test-token",
-            "agent": {
-                "accountId": "test-account",
-                "symbol": "TEST_AGENT",
-                "headquarters": "X1-TEST",
-                "credits": 150000,
-                "startingFaction": "COSMIC",
-                "shipCount": 2
+    config_path = config_dir / "config.json"
+    env_path = config_dir / ".env"
+    
+    # Create empty config file
+    with open(config_path, 'w') as f:
+        json.dump({}, f)
+    
+    # Create empty .env file
+    with open(env_path, 'w') as f:
+        pass
+    
+    # Create a test settings instance with patched paths
+    with patch('src.config.CONFIG_PATH', str(config_path)), \
+         patch('src.config.ENV_PATH', str(env_path)), \
+         patch('src.api.client.CONFIG_PATH', str(config_path)), \
+         patch('src.api.client.ENV_PATH', str(env_path)), \
+         patch.dict('os.environ', {'PWD': str(config_dir)}):
+        
+        # Create a new settings instance
+        test_settings = Settings(
+            _env_file=str(env_path),  # Enable .env file loading for this test
+            spacetraders_token=None,
+            api_url='https://api.spacetraders.io/v2'
+        )
+        
+        # Mock get_settings to always return our test instance
+        def mock_get_settings():
+            return test_settings
+        
+        # Patch the settings instance and paths
+        with patch('src.config.settings', test_settings), \
+             patch('src.config.get_settings', mock_get_settings), \
+             patch('src.api.client.settings', test_settings):
+            
+            client = SpaceTradersClient()
+
+            # Mock registration response
+            mock_response = {
+                "data": {
+                    "token": "test-token",
+                    "agent": {
+                        "accountId": "test-account",
+                        "symbol": "TEST_AGENT",
+                        "headquarters": "X1-TEST",
+                        "credits": 150000,
+                        "startingFaction": "COSMIC",
+                        "shipCount": 2
+                    }
+                }
             }
-        }
-    }
-    
-    responses.add(
-        responses.POST,
-        "https://api.spacetraders.io/v2/register",
-        json=mock_response,
-        status=201
-    )
-    
-    # Register new agent
-    client.register_new_agent("TEST_AGENT")
-    
-    assert client.token == "test-token"
-    
-    # Check that token was saved to config.json
-    with open('config.json', 'r') as f:
-        config = json.load(f)
-        assert config['agent_symbol'] == "TEST_AGENT"
-    
-    # Validate response schema
-    schema, validator = load_openapi_schema(OPENAPI_SCHEMA_PATH)
-    register_schema = schema["paths"]["/register"]["post"]["responses"]["201"]["content"]["application/json"]["schema"]
-    validator.validate(mock_response)
+
+            responses.add(
+                responses.POST,
+                "https://api.spacetraders.io/v2/register",
+                json=mock_response,
+                status=201
+            )
+
+            # Register new agent
+            client.register_new_agent("TEST_AGENT")
+            
+            assert client.token == "test-token"
+            
+            # Print out actual paths and content for debugging
+            print(f"Config path: {config_path}")
+            print(f"Env path: {env_path}")
+            print(f"Config exists: {os.path.exists(config_path)}")
+            print(f"Env exists: {os.path.exists(env_path)}")
+            
+            if os.path.exists(config_path):
+                with open(config_path) as f:
+                    print(f"Config content: {f.read()}")
+            
+            if os.path.exists(env_path):
+                with open(env_path) as f:
+                    print(f"Env content: {f.read()}")
+            
+            # Check that token was saved to config.json
+            with open(config_path) as f:
+                config = json.load(f)
+                assert config.get('SPACETRADERS_TOKEN') == "test-token"
+            
+            # Check that token was saved to .env
+            with open(env_path) as f:
+                content = f.read()
+                assert 'SPACETRADERS_TOKEN=test-token\n' in content
+            
+            # Create a new settings instance to verify token is loaded from files
+            new_settings = Settings(
+                _env_file=str(env_path),  # Enable .env file loading
+                api_url='https://api.spacetraders.io/v2'
+            )
+            assert new_settings.spacetraders_token == "test-token"
 
 @responses.activate
 def test_get_contracts():

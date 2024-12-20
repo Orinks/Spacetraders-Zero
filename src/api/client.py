@@ -5,7 +5,7 @@ import logging
 import requests
 from typing import Dict, Any, Optional, List, Tuple
 import json
-from src.config import settings
+from src.config import settings, CONFIG_PATH, ENV_PATH
 from collections import deque
 import statistics
 from datetime import datetime, timedelta
@@ -338,7 +338,7 @@ class SpaceTradersClient:
                 raise ValueError("No token received in registration response")
             
             # Update token in settings (which also updates .env file)
-            settings.update_token(token)
+            settings.update_token(token, config_path=CONFIG_PATH, env_path=ENV_PATH)
             self.token = token
             self.logger.info("Successfully registered new agent and saved token")
             

@@ -5,7 +5,7 @@ import sys
 import logging
 import requests
 from typing import Dict, Any, List, Optional, Tuple
-from api.client import SpaceTradersClient
+from src.api.client import SpaceTradersClient
 
 class AutomatedTrader:
     """Basic automated trading agent"""
