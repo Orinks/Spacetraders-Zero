@@ -1,0 +1,10 @@
+pydantic>=2.5.2,<3.0.0
+packaging>=21.0,<22.0
+setuptools~=69.1
+wheel
+pytest>=8.3.4
+pytest-mock>=3.14.0
+mypy>=1.13.0
+types-requests>=2.32.0
+bandit>=1.8.0
+safety>=3.2.13

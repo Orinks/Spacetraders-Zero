@@ -45,24 +45,17 @@ jobs:
       if: runner.os == 'Linux'
       shell: bash
       run: |
-        # Install test dependencies first
-        pip install pytest pytest-mock mypy types-requests bandit safety
-        # Install project in editable mode
-        pip install -e .
-        # Finally install runtime dependencies (excluding wxPython)
-        grep -v "wxPython" requirements.txt > requirements_linux.txt
-        pip install -r requirements_linux.txt
+        # Install all dependencies at once with constraints
+        pip install -e . -r requirements.txt -c constraints.txt pytest pytest-mock mypy types-requests bandit safety
+        # Remove wxPython from runtime dependencies for Linux
+        pip uninstall -y wxPython
     
     - name: Install Python dependencies (Windows)
       if: runner.os == 'Windows'
       shell: pwsh
       run: |
-        # Install test dependencies first
-        pip install pytest pytest-mock mypy types-requests bandit safety
-        # Install project in editable mode
-        pip install -e .
-        # Finally install runtime dependencies
-        pip install -r requirements.txt
+        # Install all dependencies at once with constraints
+        pip install -e . -r requirements.txt -c constraints.txt pytest pytest-mock mypy types-requests bandit safety
     
     - name: Run config tests
       shell: bash
