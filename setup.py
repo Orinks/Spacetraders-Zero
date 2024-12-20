@@ -5,7 +5,7 @@ setup(
     version="0.1.0.dev0",  # Using PEP 440 version format
     packages=find_packages(where="src"),
     package_dir={"": "src"},
-    include_package_data=False,  # Don't automatically include package data
+    include_package_data=True,  # Include files from MANIFEST.in
     install_requires=[
         "requests>=2.31.0",
         "pydantic>=2.5.2",
