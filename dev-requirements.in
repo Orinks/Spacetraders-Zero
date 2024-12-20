@@ -5,4 +5,4 @@ pytest-mock>=3.14.0
 mypy>=1.13.0
 types-requests>=2.32.0
 bandit>=1.8.0
-safety>=3.2.13
+safety==2.3.5  # Pin to older version to avoid pydantic conflicts
