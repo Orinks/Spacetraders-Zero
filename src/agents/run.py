@@ -8,9 +8,8 @@ from typing import Dict, Any
 src_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, src_dir)
 
-from api.client import SpaceTradersClient
-from agents.trader import AutomatedTrader
-
+from src.api.client import SpaceTradersClient
+from src.agents.trader import AutomatedTrader
 def on_agent_update(status: Dict[str, Any]) -> None:
     """Handle agent status updates"""
     if status.get("status") == "error":

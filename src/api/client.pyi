@@ -10,7 +10,7 @@ class CircuitState(Enum):
 class CacheEntry:
     data: Any
     timestamp: float
-    
+
     def __init__(self, data: Any, timestamp: float) -> None: ...
 
 class SpaceTradersClient:

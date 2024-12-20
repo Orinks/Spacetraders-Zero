@@ -11,7 +11,7 @@ src_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if src_dir not in sys.path:
     sys.path.append(src_dir)
 
-from api.client import SpaceTradersClient
+from src.api.client import SpaceTradersClient
 from persistence import StateManager
 
 class ShipMount(TypedDict):

@@ -5,10 +5,7 @@ import logging
 import requests
 from typing import Dict, Any, Optional, List, Tuple, Sequence, TypeVar, cast, Union
 import json
-try:
-    from src.config import settings, CONFIG_PATH, ENV_PATH
-except ImportError:
-    from ..config import settings, CONFIG_PATH, ENV_PATH
+from src.config import settings, CONFIG_PATH, ENV_PATH
 from collections import deque
 import statistics
 from datetime import datetime, timedelta
