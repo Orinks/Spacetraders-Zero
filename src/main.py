@@ -1,8 +1,18 @@
 import wx
 import os
+import sys
 import logging
 from dotenv import load_dotenv
-from ui.main_window import MainWindow
+
+# Add the project root directory to Python path when running directly
+if __name__ == "__main__":
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    sys.path.insert(0, project_root)
+
+try:
+    from src.ui.main_window import MainWindow
+except ImportError:
+    from ui.main_window import MainWindow
 
 def main():
     """Main entry point for SpaceTraders Zero"""

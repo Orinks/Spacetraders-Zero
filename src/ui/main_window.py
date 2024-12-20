@@ -4,9 +4,12 @@ import requests
 import logging
 import time
 from typing import Dict, Any
-from api.client import SpaceTradersClient
-from agents.trader import AutomatedTrader
-
+try:
+    from src.api.client import SpaceTradersClient
+    from src.agents.trader import AutomatedTrader
+except ImportError:
+    from api.client import SpaceTradersClient
+    from agents.trader import AutomatedTrader
 class MainWindow(wx.Frame):
     def __init__(self, parent, title):
         try:
