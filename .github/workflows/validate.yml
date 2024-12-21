@@ -3,14 +3,15 @@ name: Validate and Secure
 on:
   push:
     branches: [ main ]
+    branches-ignore: [ test-simplified-workflow ]
   pull_request:
-    types: [opened, synchronize, reopened, labeled]
+    branches: [ main ]
+    branches-ignore: [ test-simplified-workflow ]
   schedule:
     - cron: '0 0 * * 0'  # Weekly security scan
 
 jobs:
   validate:
-    if: "!contains(github.event.pull_request.labels.*.name, 'test-simplified')"
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
