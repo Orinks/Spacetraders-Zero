@@ -2,12 +2,15 @@
 name: Validate and Secure (Simplified Version)
 
 on:
+  workflow_dispatch:
+    inputs:
+      test_mode:
+        description: 'Run in test mode'
+        required: false
+        default: 'true'
   pull_request:
-    branches:
-      - test-simplified-workflow
-  push:
-    branches:
-      - test-simplified-workflow
+    paths:
+      - '.github/workflows/refactored_validate_simplified.yml'
 
 jobs:
   validate:
