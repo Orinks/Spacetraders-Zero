@@ -7,13 +7,20 @@ on:
 
 jobs:
   validate:
-    if: contains(github.event.pull_request.labels.*.name, 'test-simplified')
+    if: |
+      contains(github.event.pull_request.labels.*.name, 'test-simplified')
+      && github.event_name == 'pull_request'
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
         python-version: ['3.12']
     runs-on: ${{ matrix.os }}
     steps:
+    - name: Debug Event
+      env:
+        DEBUG_EVENT: ${{ toJSON(github.event) }}
+      run: echo "$DEBUG_EVENT"
+
     - uses: actions/checkout@v3
     
     - name: Set up Python
