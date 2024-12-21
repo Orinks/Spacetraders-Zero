@@ -1,0 +1,82 @@
+
+name: Validate and Secure
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    - cron: '0 0 * * 0'  # Weekly security scan
+
+jobs:
+  validate:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ['3.12']
+    runs-on: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Upgrade pip and install tools
+      run: python -m pip install --upgrade pip wheel pip-tools build
+    
+    - name: Install system dependencies (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y python3-wxgtk4.0 libgtk-3-dev pkg-config
+    
+    - name: Install wxPython (Windows)
+      if: runner.os == 'Windows'
+      run: pip install wxPython
+    
+    - name: Compile requirements
+      run: |
+        pip-compile requirements.in --output-file=requirements.txt --no-emit-index-url
+        pip-compile dev-requirements.in --output-file=dev-requirements.txt --no-emit-index-url
+    
+    - name: Install Python dependencies
+      run: |
+        pip install -r requirements.txt
+        pip install -e .
+    
+    - name: Run all tests
+      env:
+        SPACETRADERS_TOKEN: test-token
+        SPACETRADERS_API_URL: https://api.spacetraders.io/v2
+      run: python -m pytest tests/ -v
+    
+    - name: Run type checking
+      run: python -m mypy src
+    
+    - name: Run security checks
+      run: |
+        python -m bandit -r src/ --skip B311
+        python -m safety check
+
+  create-tag:
+    needs: validate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Create date-based tag
+      run: |
+        TAG_NAME=$(date +'%Y.%m.%d-%H%M')
+        git config user.name "GitHub Actions"
+        git config user.email "actions@github.com"
+        git tag $TAG_NAME
+        git push origin $TAG_NAME
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
