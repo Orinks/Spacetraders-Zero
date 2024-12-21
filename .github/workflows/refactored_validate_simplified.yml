@@ -3,8 +3,7 @@ name: Validate and Secure (Simplified)
 
 on:
   pull_request:
-    paths:
-      - '.github/workflows/refactored_validate_simplified.yml'
+    branches: [ test-simplified-workflow ]
 
 jobs:
   validate:
