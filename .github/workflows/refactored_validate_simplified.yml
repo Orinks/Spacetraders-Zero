@@ -1,5 +1,5 @@
 
-name: Validate and Secure (Simplified)
+name: Validate and Secure (Simplified Version)
 
 on:
   pull_request:
