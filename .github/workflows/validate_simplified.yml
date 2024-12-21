@@ -1,0 +1,46 @@
+name: Validate and Secure (Simplified)
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.12"
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -r dev-requirements.txt
+        pip install mypy pytest safety bandit black
+        
+    - name: Run tests
+      run: |
+        python -m pytest tests/ -v
+        
+    - name: Run type checking
+      run: |
+        mypy src/ tests/
+        
+    - name: Run security checks
+      run: |
+        bandit -r src/
+        safety check
+        
+    - name: Check code formatting
+      run: |
+        black --check src/ tests/
