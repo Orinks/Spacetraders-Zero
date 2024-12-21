@@ -3,10 +3,11 @@ name: Validate and Secure (Simplified)
 
 on:
   pull_request:
-    branches: [ test-simplified-workflow ]
+    types: [opened, synchronize, reopened, labeled]
 
 jobs:
   validate:
+    if: contains(github.event.pull_request.labels.*.name, 'test-simplified')
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]

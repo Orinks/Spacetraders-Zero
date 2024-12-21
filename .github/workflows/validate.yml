@@ -4,13 +4,13 @@ on:
   push:
     branches: [ main ]
   pull_request:
-    branches: [ main ]
-    branches-ignore: [ test-simplified-workflow ]
+    types: [opened, synchronize, reopened, labeled]
   schedule:
     - cron: '0 0 * * 0'  # Weekly security scan
 
 jobs:
   validate:
+    if: "!contains(github.event.pull_request.labels.*.name, 'test-simplified')"
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
