@@ -203,6 +203,13 @@ class SpaceTradersClient:
         if not self._check_circuit_breaker(endpoint):
             raise RuntimeError(f"Circuit breaker is open for {endpoint}")
 
+        # Check cache for GET requests
+        if method == "GET":
+            cached_response = self._get_cached_response(endpoint)
+            if cached_response is not None:
+                self.logger.debug(f"Cache hit for {endpoint}")
+                return cached_response
+
         retries = 0
         max_retries = 2
         success = False
@@ -214,6 +221,14 @@ class SpaceTradersClient:
                 
                 url = f"{self.base_url}/{endpoint}"
                 headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+                
+                # Add cache headers if available
+                if method == "GET" and endpoint in self.cache:
+                    cached = self.cache[endpoint]
+                    if cached.etag:
+                        headers["If-None-Match"] = cached.etag
+                    if cached.last_modified:
+                        headers["If-Modified-Since"] = cached.last_modified
                 
                 # Add data to request if provided
                 if data is not None:
@@ -237,8 +252,22 @@ class SpaceTradersClient:
                         self.min_request_interval = 1.0 / self.requests_per_second
                         self.logger.info(f"Reduced rate limit to {self.requests_per_second:.1f} requests/second due to high response times")
                 
+                # Handle 304 Not Modified
+                if response.status_code == 304 and method == "GET":
+                    cached_response = self._get_cached_response(endpoint)
+                    if cached_response is not None:
+                        success = True
+                        return cached_response
+                
                 response.raise_for_status()
                 success = True
+                
+                # Update cache for successful GET requests
+                if method == "GET" and 200 <= response.status_code < 300:
+                    response_data = response.json()
+                    self._update_cache(endpoint, response_data, response)
+                    return response_data
+                
                 return response.json()
                 
             except Exception as e:

@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import patch, MagicMock
 import time
+import requests
 from src.api.client import SpaceTradersClient, CacheEntry
 import aiohttp
 
@@ -15,12 +16,15 @@ class TestSpaceTradersClientOptimizations(unittest.TestCase):
         test_data = {"data": "test"}
         
         # Create a mock response
-        mock_response = MagicMock()
+        mock_response = MagicMock(spec=requests.Response)
         mock_response.status_code = 200
+        mock_response.reason = "OK"
+        mock_response.url = "http://test/test/endpoint"
         mock_response.json.return_value = test_data
         mock_response.headers = {'ETag': 'test-etag'}
+        mock_response.raise_for_status = lambda: None
         
-        with patch('requests.get', return_value=mock_response):
+        with patch('requests.request', return_value=mock_response):
             # First request should hit the API
             result1 = self.client._make_request("GET", endpoint)
             self.assertEqual(result1, test_data)
@@ -38,16 +42,23 @@ class TestSpaceTradersClientOptimizations(unittest.TestCase):
         test_data = {"data": "test"}
         
         # First response with ETag
-        mock_response1 = MagicMock()
+        mock_response1 = MagicMock(spec=requests.Response)
         mock_response1.status_code = 200
+        mock_response1.reason = "OK"
+        mock_response1.url = "http://test/test/endpoint"
         mock_response1.json.return_value = test_data
         mock_response1.headers = {'ETag': 'test-etag'}
+        mock_response1.raise_for_status = lambda: None
         
         # Second response (304 Not Modified)
-        mock_response2 = MagicMock()
+        mock_response2 = MagicMock(spec=requests.Response)
         mock_response2.status_code = 304
+        mock_response2.reason = "Not Modified"
+        mock_response2.url = "http://test/test/endpoint"
+        mock_response2.headers = {'ETag': 'test-etag'}
+        mock_response2.raise_for_status = lambda: None
         
-        with patch('requests.get', side_effect=[mock_response1, mock_response2]):
+        with patch('requests.request', side_effect=[mock_response1, mock_response2]):
             # First request should store the ETag
             result1 = self.client._make_request("GET", endpoint)
             self.assertEqual(result1, test_data)
@@ -97,12 +108,15 @@ class TestSpaceTradersClientOptimizations(unittest.TestCase):
         test_data = {"data": "test"}
         
         # Create a mock response
-        mock_response = MagicMock()
+        mock_response = MagicMock(spec=requests.Response)
         mock_response.status_code = 200
+        mock_response.reason = "OK"
+        mock_response.url = "http://test/test/endpoint"
         mock_response.json.return_value = test_data
         mock_response.headers = {}
+        mock_response.raise_for_status = lambda: None
         
-        with patch('requests.get', return_value=mock_response):
+        with patch('requests.request', return_value=mock_response):
             # Set a short TTL for testing
             self.client.cache_ttl = 0.1
             
