@@ -1139,7 +1139,7 @@ class TestSpaceTradersClient(unittest.TestCase):
         """Test exponential backoff with jitter on failures"""
         logging.info("[TEST] Testing exponential backoff with simulated failures")
         # Set up time mock
-        current_time = 0
+        current_time = 0.0  # Use float for time tracking
         def time_side_effect():
             nonlocal current_time
             current_time += 0.1
