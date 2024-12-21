@@ -1,13 +1,10 @@
 
-name: Validate and Secure
+name: Validate and Secure (Simplified)
 
 on:
-  push:
-    branches: [ main ]
   pull_request:
-    branches: [ main ]
-  schedule:
-    - cron: '0 0 * * 0'  # Weekly security scan
+    paths:
+      - '.github/workflows/refactored_validate_simplified.yml'
 
 jobs:
   validate:
