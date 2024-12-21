@@ -3,8 +3,10 @@ name: Validate and Secure
 on:
   push:
     branches: [ main ]
+    branches-ignore: [ test-simplified-workflow ]
   pull_request:
     branches: [ main ]
+    branches-ignore: [ test-simplified-workflow ]
   schedule:
     - cron: '0 0 * * 0'  # Weekly security scan
 
