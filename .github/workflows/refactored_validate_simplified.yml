@@ -53,14 +53,23 @@ jobs:
     - name: Install Python dependencies
       run: |
         pip install -r requirements.txt
-        pip install -r dev-requirements.txt
+        pip install pytest==7.4.3 pytest-mock>=3.14.0 mypy>=1.13.0 types-requests>=2.32.0 bandit>=1.8.0 safety==2.3.5 jsonschema>=4.20.0 responses>=0.24.1
         pip install -e .
     
     - name: Run all tests
       env:
         SPACETRADERS_TOKEN: test-token
         SPACETRADERS_API_URL: https://api.spacetraders.io/v2
-      run: python -m pytest tests/ -v
+      run: |
+        python -m pytest tests/test_config.py -v
+        python -m pytest tests/test_client.py -v
+        python -m pytest tests/test_client_logging.py -v
+        python -m pytest tests/test_client_optimizations.py -v
+        python -m pytest tests/test_gameplay.py -v
+        python -m pytest tests/test_mining.py -v
+        python -m pytest tests/test_persistence.py -v
+        python -m pytest tests/test_selling.py -v
+        python -m pytest tests/test_trader.py -v
     
     - name: Run type checking
       run: python -m mypy src
